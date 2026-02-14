@@ -1,0 +1,493 @@
+.profileCard{
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.profileBanner{
+  height: 140px;
+  background: rgba(255,255,255,0.06);
+  background-size: cover;
+  background-position: center;
+  
+}
+
+.profileTop{
+  display: flex;
+  gap: 14px;
+  padding: 14px;
+  margin-top: -5px;
+}
+
+.avatarWrap{ width: 92px; flex: 0 0 92px; }
+.avatar{
+  width: 92px; height: 92px;
+  border-radius: 999px;
+  border: 2px solid rgba(0,0,0,0.35);
+  background: rgba(255,255,255,0.08);
+  background-size: cover;
+  background-position: center;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 28px;
+  color: rgba(232,236,241,0.95);
+}
+
+.profileInfo {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;  /* keeps name/stats vertically centered */
+}
+
+
+
+.profileNameRow{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.displayName{
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(232,236,241,0.95);
+}
+.handle{
+  font-size: 13px;
+  color: rgba(232,236,241,0.65);
+  margin-top: 2px;
+}
+
+.profileMeta{
+  margin-top: 8px;
+  font-size: 13px;
+  color: rgba(232,236,241,0.75);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.dot{ opacity: 0.55; }
+
+.bio{
+  margin-top: 10px;
+  color: rgba(232,236,241,0.85);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.links{
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill{
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: rgba(232,236,241,0.80);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.editBtn{
+  margin-left: auto;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(80,160,255,0.35);
+  background: rgba(80,160,255,0.16);
+  color: rgba(210,232,255,0.95);
+}
+
+.profileSectionTitle{
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  color: rgba(232,236,241,0.85);
+  font-weight: 700;
+}
+
+.profileForm{
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.field{
+  display: grid;
+  gap: 6px;
+  color: rgba(232,236,241,0.75);
+  font-size: 12px;
+}
+
+.field input, .field textarea{
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+  color: rgba(232,236,241,0.92);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.formActions{
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+@media (max-width: 640px){
+  .profileTop{ flex-direction: column; margin-top: -38px; }
+  .avatarWrap{ width: 86px; }
+  .avatar{ width: 86px; height: 86px; }
+  .editBtn{ margin-left: 0; }
+}
+
+.profileHeader {
+  display: flex;
+  align-items: center;      /* THIS is the key line */
+  gap: 16px;
+  padding: 16px 20px;
+}
+
+.profileAvatar {
+  width: 72px;        /* was probably 96px or 80px */
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.profileStats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  color: rgba(255,255,255,0.7);
+  font-size: 13px;
+}
+
+.profileStats .dot {
+  opacity: 0.4;
+}
+
+.profileActions {
+  margin-left: auto;        /* pushes it to the right */
+  display: flex;
+  align-items: center;      /* aligns with avatar row */
+}
+
+.profileCard {
+  padding: 20px;          /* instead of 14–16px */
+}
+
+.profileSection {
+  padding: 16px 20px;
+}
+
+.profileUploadsGrid{
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.profileSectionTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profileSort {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profileSortLabel {
+  opacity: 0.8;
+  font-size: 14px;
+}
+
+/* Container look */
+.profileSortSelect {
+  appearance: none;              /* remove OS styling */
+  -webkit-appearance: none;
+
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+
+  padding: 10px 32px 10px 12px;
+  border-radius: 12px;
+
+  font-size: 14px;
+  cursor: pointer;
+
+  transition: all 0.15s ease;
+
+  /* custom arrow */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px;
+}
+
+.profileSortSelect:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.profileSortSelect:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Dropdown options */
+.profileSortSelect option {
+  background: #0f1114;  /* dark background like your site */
+  color: white;
+  padding: 8px;
+}
+
+.profileSectionTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profileSort {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.profileSortLabel {
+  opacity: 0.8;
+  font-size: 14px;
+}
+
+/* Container look */
+.profileSortSelect {
+  appearance: none;              /* remove OS styling */
+  -webkit-appearance: none;
+
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+
+  padding: 10px 32px 10px 12px;
+  border-radius: 12px;
+
+  font-size: 14px;
+  cursor: pointer;
+
+  transition: all 0.15s ease;
+
+  /* custom arrow */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='white' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px;
+}
+
+.profileSortSelect:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.profileSortSelect:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Dropdown options */
+.profileSortSelect option {
+  background: #0f1114;  /* dark background like your site */
+  color: white;
+  padding: 8px;
+}
+
+.profileSearchForm {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.profileSearchInput {
+  width: 100%;
+  padding: 12px 40px 12px 12px;
+
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+
+  color: white;
+  font-size: 14px;
+}
+
+.profileSearchInput::placeholder {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.profileSearchInput:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.profileSearchClear {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+}
+
+.profileSearchClear:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+
+.profileControlsRow {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Let search take most of the row */
+.profileSearchForm {
+  flex: 1;
+  margin-top: 0;          /* important: remove the old top margin */
+  position: relative;
+}
+
+/* Keep sort snug to the right */
+.profileSort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Optional: keep dropdown width consistent */
+.profileSortSelect {
+  min-width: 140px;
+}
+
+/* Mobile: stack nicely */
+@media (max-width: 720px) {
+  .profileControlsRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profileSort {
+    justify-content: flex-end;
+  }
+
+  .profileSortSelect {
+    width: 100%;
+  }
+}
+
+.modalOverlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  z-index: 9999;
+}
+
+.modalCard{
+  width: 100%;
+  max-width: 480px;
+  background: #111;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.modalTitle{
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.modalBody{
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0.95;
+}
+
+.modalError{
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255,0,0,0.12);
+  border: 1px solid rgba(255,0,0,0.25);
+}
+
+.modalActions{
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.modalBtn{
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  color: white;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.modalBtn:disabled{
+  opacity: 0.55;
+  cursor: default;
+}
+
+.modalBtnDanger{
+  border: 1px solid rgba(255,0,0,0.35);
+  background: rgba(255,0,0,0.18);
+  color: white;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.modalBtnDanger:disabled{
+  opacity: 0.55;
+  cursor: default;
+}

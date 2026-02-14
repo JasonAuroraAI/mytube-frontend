@@ -1,0 +1,186 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #ddd;
+}
+
+.logo {
+  font-size: 20px;
+  font-weight: bold;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-btn {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.02)
+  );
+  color: #eaf2ff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+
+  cursor: pointer;
+
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.15s ease;
+}
+
+.login-btn:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.05)
+  );
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1px rgba(120, 180, 255, 0.25),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.login-btn:active {
+  transform: translateY(0);
+}
+
+.login-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(120, 180, 255, 0.35),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Wrap login + signup text */
+.auth-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* Muted helper text */
+.signup-hint {
+  font-size: 12px;
+  color: rgba(232, 236, 241, 0.55);
+  white-space: nowrap;
+}
+
+/* Link-style button */
+.signup-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 2px;
+
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(160, 200, 255, 0.9);
+
+  cursor: pointer;
+  text-decoration: none;
+
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+.signup-link:hover {
+  color: rgba(190, 220, 255, 1);
+  text-shadow: 0 0 8px rgba(120, 180, 255, 0.35);
+}
+
+.signup-link:focus-visible {
+  outline: none;
+  text-decoration: underline;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 13px;
+  color: rgba(232, 236, 241, 0.9);
+}
+
+.username {
+  font-weight: 600;
+}
+
+.tokens {
+  opacity: 0.9;
+}
+
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.85;
+}
+
+.rating .reviews {
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: 20px;  /* ✅ ensures separation from search */
+}
+
+.logo {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+
+  color: rgba(232,236,241,0.95);
+  text-decoration: none;
+  white-space: nowrap;
+
+  cursor: pointer;
+}
+
+.logo:hover {
+  color: white;
+}
+
+.searchForm { flex: 1; display: flex; }
+
+.user-info a {
+  color: #e8ecf1;        /* same as your normal text color */
+  text-decoration: none; /* remove underline */
+}
+
+.user-info a:visited {
+  color: #e8ecf1;        /* prevent purple visited color */
+}
+
+.user-info a:hover {
+  color: #4da3ff;        /* optional nice hover color */
+  text-decoration: underline;
+}
+

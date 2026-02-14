@@ -1,0 +1,246 @@
+.video-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.video-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  margin-top: 0px;
+}
+
+.video-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.dot {
+  opacity: 0.6;
+}
+
+.thumb-wrapper {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 2px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  aspect-ratio: 16 / 9;
+}
+
+.thumb-wrapper img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 12px;
+}
+
+.video-card {
+  transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.video-card:hover {
+  transform: translateY(-3px);
+}
+
+.thumb-wrapper {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+
+  aspect-ratio: 16 / 9;
+}
+
+.video-card:hover .thumb-wrapper {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+
+.thumb-wrapper img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-card:hover .thumb-wrapper img {
+  transform: scale(1.04);
+  filter: brightness(1.05) contrast(1.02);
+}
+
+.durationBadge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+
+  padding: 3px 6px;
+  border-radius: 6px;
+
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+
+  color: rgba(232, 236, 241, 0.95);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+
+  pointer-events: none;
+}
+
+/* --- Locked / blurred state --- */
+.video-card.locked .thumb-wrapper img {
+  filter: blur(10px) brightness(0.65);
+  transform: scale(1.06);
+}
+
+.lockOverlay {
+  position: absolute;
+  inset: 0;
+
+  display: grid;
+  place-items: center;
+
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+
+  pointer-events: none;
+}
+
+.lockPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  padding: 8px 10px;
+  border-radius: 999px;
+
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+
+  color: rgba(232, 236, 241, 0.95);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lockIcon {
+  font-size: 13px;
+}
+
+.vTitleRow{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+}
+
+.video-title{
+  flex:1;
+  margin:0;
+
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+}
+
+/* rating block on the right of the title */
+.vRating{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  white-space:nowrap;
+  margin-top:1px;
+  margin-right: 6px; 
+}
+
+.vStar{
+  color:#ffcc00;
+  font-size:12px;
+  line-height:1;
+}
+
+.vAvg{
+  font-size:12px;
+  line-height:1;
+}
+
+.vCount{
+  font-size:12px;
+  line-height:1;
+  color:rgba(255,255,255,0.55);
+}
+
+.video-creator {
+  color: inherit;            /* don't use browser link colors */
+  text-decoration: none;     /* remove underline */
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.video-creator:visited {
+  color: inherit;            /* stop purple visited color */
+}
+
+.video-creator:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.video-sub {
+  font-size: 13px;
+  color: #aaa;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.video-views {
+  opacity: 0.85;
+}
+
+.dot {
+  opacity: 0.6;
+}
+
+
+.video-card .thumb-wrapper {
+  cursor: pointer;
+}
+
+.vTitleRight {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vDeleteBtn {
+  appearance: none;
+  border: 1px solid rgba(255, 100, 100, 0.35);
+  background: rgba(255, 100, 100, 0.12);
+  color: rgba(255, 200, 200, 0.95);
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.vDeleteBtn:hover {
+  background: rgba(255, 100, 100, 0.18);
+  border-color: rgba(255, 100, 100, 0.50);
+}

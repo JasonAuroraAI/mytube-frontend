@@ -1,0 +1,63 @@
+.shelf {
+  margin-bottom: 26px;
+}
+
+.shelfHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.shelfTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.shelfGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 240px);
+  gap: 18px;
+  justify-content: start;
+  align-items: start;
+}
+
+
+/* Optional: prevent 1–2 giant cards on wide screens */
+/* VideoShelf.css (or wherever .shelfGrid lives) */
+.shelfGrid {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+
+  /* ✅ force single row */
+  flex-wrap: nowrap;
+
+  /* ✅ horizontal scroll when needed */
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 10px;
+
+  /* optional: nicer scrolling */
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* each card should have a stable width so it doesn't stretch huge */
+.shelfGrid .video-card {
+  flex: 0 0 240px; /* adjust to taste: 220/240/260 */
+  scroll-snap-align: start;
+}
+
+/* optional: make scrollbar subtle */
+.shelfGrid::-webkit-scrollbar {
+  height: 10px;
+}
+.shelfGrid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+.shelfGrid::-webkit-scrollbar-track {
+  background: transparent;
+}

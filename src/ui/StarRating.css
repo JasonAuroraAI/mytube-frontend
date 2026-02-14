@@ -1,0 +1,80 @@
+.ratingStars {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ratingRow {
+  display: flex;
+  align-items: center;
+}
+
+.ratingLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ratingStars {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.starBtn {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: #888; /* default grey */
+  padding: 0;
+}
+
+/* Hover state – temporary preview (50% yellow) */
+.ratingStars:hover .starBtn {
+  color: rgba(255, 200, 0, 0.5);
+}
+
+/* When hovering over a specific star, light up all up to it */
+.starBtn:hover,
+.starBtn:hover ~ .starBtn {
+  color: #777;           /* reset later siblings back to grey */
+}
+
+.ratingStars:hover .starBtn:hover,
+.ratingStars:hover .starBtn:hover ~ .starBtn {
+  color: #777;
+}
+
+.starBtn.hoverOn {
+  color: rgba(255, 204, 0, 0.5); /* yellow 50% on hover */
+}
+
+/* Actual hover highlight up to the hovered index */
+.ratingStars:hover .starBtn:nth-child(-n + 5) {
+  color: rgba(255, 200, 0, 0.5);
+}
+
+/* Solid yellow for confirmed rating */
+.starBtn.on {
+  color: #ffcc00; /* solid yellow when rated */
+}
+
+/* Disabled state */
+.starBtn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* NEW INLINE TEXT STYLE */
+
+.ratingInline {
+  margin-left: 8px;
+  font-size: 15px;
+  color: #eaeaea; /* main rating color */
+}
+
+.ratingCount {
+  margin-left: 4px;
+  font-size: 12px;
+  color: #888; /* smaller and grey */
+}

@@ -1,0 +1,108 @@
+.createCard {
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  border-radius: 16px;
+  padding: 16px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.createTitle {
+  font-size: 18px;
+  font-weight: 800;
+  color: rgba(232,236,241,0.95);
+  margin-bottom: 12px;
+}
+
+.createForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.createLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(232,236,241,0.75);
+}
+
+.createInput,
+.createTextarea,
+.createSelect {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  color: rgba(232,236,241,0.95);
+  padding: 10px 12px;
+  font-size: 14px;
+  font: inherit;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.createTextarea {
+  resize: vertical;
+  min-height: 110px;
+}
+
+.createInput:focus,
+.createTextarea:focus,
+.createSelect:focus {
+  outline: none;
+  border-color: rgba(255,255,255,0.22);
+  background: rgba(255,255,255,0.06);
+}
+
+.createRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.createFile {
+  color: rgba(232,236,241,0.8);
+}
+
+.createHint {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.createError {
+  color: salmon;
+  font-size: 13px;
+}
+
+.createActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.createBtn {
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: rgba(232,236,241,0.95);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.createBtn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.18);
+}
+
+.createBtn.primary {
+  border-color: rgba(80, 160, 255, 0.35);
+  background: rgba(80, 160, 255, 0.16);
+  color: rgba(210, 232, 255, 0.95);
+}
+
+.createBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
