@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
+import { me } from "api"; 
 
 import AppLayout from "./layouts/AppLayout.jsx";
 import Home from "./pages/Home.jsx";
@@ -14,6 +15,13 @@ export default function App() {
 
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
+
+  useEffect(() => {
+    (async () => {
+      const u = await me();
+      if (u) setUser(u);
+    })();
+  }, []);
 
   // ✅ single source of truth for restoring session user
   const refreshMe = useCallback(async () => {
