@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
-import { me } from "api"; 
+import { me } from "./api"; 
 
 import AppLayout from "./layouts/AppLayout.jsx";
 import Home from "./pages/Home.jsx";
