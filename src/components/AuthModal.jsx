@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 import { login, register } from "../api"; // adjust path to your api.js
 
 
-
 export default function AuthModal({
   mode = "login", // "login" | "register"
   onClose,
@@ -13,7 +12,7 @@ export default function AuthModal({
 }) {
   const isLogin = mode === "login";
 
-  
+
 
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
