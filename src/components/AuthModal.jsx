@@ -13,6 +13,8 @@ export default function AuthModal({
 }) {
   const isLogin = mode === "login";
 
+  
+
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
