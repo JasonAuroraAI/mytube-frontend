@@ -214,3 +214,46 @@ export async function getUserVideos(username, { sort } = {}) {
   if (!res.ok) throw new Error(data?.error || `getUserVideos failed: ${res.status}`);
   return data;
 }
+
+// AUTH
+export async function login({ email, password }) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `Login failed: ${res.status}`);
+  return data;
+}
+
+export async function register({ email, username, password }) {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ email, username, password }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `Register failed: ${res.status}`);
+  return data;
+}
+
+export async function logout() {
+  const res = await fetch(`${API_BASE}/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `Logout failed: ${res.status}`);
+  return data;
+}
+
+export async function me() {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    credentials: "include",
+  });
+  if (!res.ok) return null;
+  return res.json();
+}

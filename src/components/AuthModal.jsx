@@ -1,6 +1,8 @@
 import { useState } from "react";
 import "./LoginModal.css";
 import { useEffect, useRef } from "react";
+import { login, register } from "../api"; // adjust path to your api.js
+
 
 
 export default function AuthModal({
@@ -46,33 +48,19 @@ export default function AuthModal({
       return;
     }
 
-    const url = isLogin ? "/auth/login" : "/auth/register";
-    const payload = isLogin
-      ? { email, password }
-      : { email, username, password };
+    try {
+      const data = isLogin
+        ? await login({ email, password })
+        : await register({ email, username, password });
 
-    
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include", // ✅ cookie session
-      body: JSON.stringify(payload),
-    });
-
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      setError(data?.error || "Auth failed.");
-      return;
+      console.log("AUTH SUCCESS DATA:", data);
+      onSuccess(data);
+      onClose();
+    } catch (err) {
+      setError(err?.message || "Auth failed.");
     }
-
-    // ✅ backend returns user object
-    console.log("AUTH SUCCESS DATA:", data);
-    onSuccess(data);
-    setTimeout(() => console.log("AuthModal closed, user should be set."), 0);
-    onClose();
   }
+
 
   return (
     <div
