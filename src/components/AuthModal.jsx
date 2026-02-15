@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { login, register } from "../api"; // adjust path to your api.js
 
 
+
 export default function AuthModal({
   mode = "login", // "login" | "register"
   onClose,
