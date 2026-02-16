@@ -258,3 +258,10 @@ export async function me() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function whoami() {
+  const res = await fetch(`${API_BASE}/__whoami`, { credentials: "include" });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `whoami failed: ${res.status}`);
+  return data?.user ?? null;
+}

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, NavLink, useSearchParams } from "react-router-dom";
-import { getProfileByUsername, getUserVideos, deleteVideo } from "../api.js";
 import VideoCard from "../ui/VideoCard.jsx";
 import "./Profile.css";
+import { getProfileByUsername, getUserVideos, deleteVideo, whoami } from "../api.js";
 
 function norm(s) {
   return String(s || "").toLowerCase().trim();
@@ -10,7 +10,8 @@ function norm(s) {
 
 function tokenize(q) {
   const STOP = new Set([
-    "a","an","the","and","or","to","of","in","on","for","with","it","is","are","was","were",
+    "a", "an", "the", "and", "or", "to", "of", "in", "on", "for", "with", "it", "is",
+    "are", "was", "were",
   ]);
   return norm(q).split(/\s+/).filter((t) => t.length >= 2 && !STOP.has(t));
 }
@@ -59,12 +60,49 @@ export default function Profile({ user, onRequireLogin }) {
   const [uploadsBusy, setUploadsBusy] = useState(false);
   const [uploadsErr, setUploadsErr] = useState("");
 
-  const isLoggedIn = !!user?.id;
+  // ✅ session truth (same as Header)
+  const [sessionUser, setSessionUser] = useState(null);
 
-  // ✅ MODAL STATE MUST BE INSIDE THE COMPONENT
+  // ✅ MODAL STATE
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+
+  // -----------------------
+  // Keep localQ in sync with URL
+  // -----------------------
+  useEffect(() => {
+    setLocalQ(urlQ);
+  }, [urlQ]);
+
+  // -----------------------
+  // whoami -> sessionUser
+  // -----------------------
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      if (!user?.id) {
+        setSessionUser(null);
+        return;
+      }
+
+      try {
+        const u = await whoami();
+        if (alive) setSessionUser(u);
+      } catch {
+        if (alive) setSessionUser(null);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [user?.id]);
+
+  // Use the same “truthy” user object everywhere in Profile
+  const me = sessionUser || user;
+  const isLoggedIn = !!me?.id;
 
   function setParam(next) {
     const sp = new URLSearchParams(params);
@@ -81,11 +119,9 @@ export default function Profile({ user, onRequireLogin }) {
     setParam({ q: localQ });
   }
 
-  useEffect(() => {
-    setLocalQ(urlQ);
-  }, [urlQ]);
-
-  // ✅ open/close/confirm delete
+  // -----------------------
+  // Delete modal
+  // -----------------------
   function openDeleteModal(video) {
     setDeleteErr("");
     setDeleteTarget(video);
@@ -104,8 +140,6 @@ export default function Profile({ user, onRequireLogin }) {
       setDeleteBusy(true);
       setDeleteErr("");
       await deleteVideo(deleteTarget.id);
-
-      // ✅ force refresh like you requested
       window.location.reload();
     } catch (e) {
       setDeleteErr(e?.message || "Failed to delete video");
@@ -113,7 +147,6 @@ export default function Profile({ user, onRequireLogin }) {
     }
   }
 
-  // ESC closes modal
   useEffect(() => {
     function onKeyDown(e) {
       if (e.key === "Escape") closeDeleteModal();
@@ -122,7 +155,9 @@ export default function Profile({ user, onRequireLogin }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [deleteTarget, deleteBusy]);
 
+  // -----------------------
   // Load profile + uploads
+  // -----------------------
   useEffect(() => {
     let alive = true;
 
@@ -138,7 +173,8 @@ export default function Profile({ user, onRequireLogin }) {
         if (!alive) return;
         setProfile(p);
 
-        const vids = await getUserVideos(p.username);
+        // pass sort so backend can sort too (you already support it)
+        const vids = await getUserVideos(p.username, { sort });
         if (!alive) return;
         setUploadsRaw(Array.isArray(vids) ? vids : []);
       } catch (e) {
@@ -151,7 +187,7 @@ export default function Profile({ user, onRequireLogin }) {
     return () => {
       alive = false;
     };
-  }, [username]);
+  }, [username, sort]);
 
   const uploads = useMemo(() => {
     const filtered = uploadsRaw.filter((v) => matchesQuery(v, urlQ));
@@ -184,7 +220,15 @@ export default function Profile({ user, onRequireLogin }) {
   if (!profile) return <div className="shell">Loading…</div>;
 
   const isMe =
-    user && user.username?.toLowerCase() === profile.username?.toLowerCase();
+    !!me?.username &&
+    me.username.toLowerCase() === String(profile.username || "").toLowerCase();
+  
+    const meta = isMe && me ? me : profile;
+
+  const displayRating = Number(meta?.rating ?? 0);
+  const displayReviewCount = Number(meta?.reviewCount ?? meta?.review_count ?? 0);
+  const displayTokens = Number(meta?.tokens ?? 0);
+
 
   return (
     <div className="shell">
@@ -231,11 +275,9 @@ export default function Profile({ user, onRequireLogin }) {
             <div className="handle">@{profile.username}</div>
 
             <div className="profileMeta">
-              <span>⭐ {Number(profile.rating ?? 0).toFixed(2)}</span>
+              <span>⭐ {displayRating.toFixed(2)}</span>
               <span className="dot">•</span>
-              <span>{profile.reviewCount ?? 0} reviews</span>
-              <span className="dot">•</span>
-              <span>🪙 {profile.tokens ?? 0}</span>
+              <span>{displayReviewCount} reviews</span>
             </div>
 
             {profile.bio && <div className="bio">{profile.bio}</div>}
@@ -310,9 +352,9 @@ export default function Profile({ user, onRequireLogin }) {
                     key={v.id}
                     video={v}
                     locked={locked}
-                    user={user}
+                    user={me} // ✅ important: pass session truth so delete ownership works
                     onRequireLogin={() => onRequireLogin?.(`/watch/${v.id}`)}
-                    onRequestDelete={openDeleteModal}   // ✅ modal path
+                    onRequestDelete={openDeleteModal}
                   />
                 );
               })}
@@ -321,7 +363,7 @@ export default function Profile({ user, onRequireLogin }) {
         </div>
       </div>
 
-      {/* ✅ Modal */}
+      {/* Modal */}
       {deleteTarget && (
         <div className="modalOverlay" onMouseDown={closeDeleteModal}>
           <div className="modalCard" onMouseDown={(e) => e.stopPropagation()}>
