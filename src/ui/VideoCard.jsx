@@ -36,7 +36,8 @@ export default function VideoCard({
   me = null,
 }) {
   const navigate = useNavigate();
-  const src = thumbUrl(video);
+  const src = thumbUrl(video) || null;
+
 
   const views = formatViews(video.views);
   const duration =
@@ -107,7 +108,7 @@ export default function VideoCard({
       tabIndex={0}
     >
       <div className="thumb-wrapper">
-        <img src={src} alt={video.title} loading="lazy" />
+        {src ? <img src={src} alt={video.title} loading="lazy" /> : null}
         {duration && <div className="durationBadge">{duration}</div>}
 
         {locked && (

@@ -1,8 +1,67 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useSearchParams, Link } from "react-router-dom";
-import { getCategories, getVideos } from "../api.js";
+import { getVideos } from "../api.js";
 import { VideoShelf } from "../ui/VideoShelf.jsx";
 import VideoCard from "../ui/VideoCard.jsx";
+
+// -----------------------
+// Tags -> shelves helpers
+// -----------------------
+function normTag(t) {
+  return String(t || "").trim().toLowerCase();
+}
+
+function titleTag(t) {
+  const s = String(t || "").trim();
+  if (!s) return "Other";
+  return s
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function buildRowsByTags(videos, { maxRows = 8, minCount = 2 } = {}) {
+  // 1) count tags
+  const counts = new Map();
+  for (const v of videos) {
+    const tags = Array.isArray(v.tags) ? v.tags : [];
+    for (const raw of tags) {
+      const t = normTag(raw);
+      if (!t) continue;
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+  }
+
+  // 2) pick top tags
+  const topTags = [...counts.entries()]
+    .filter(([, c]) => c >= minCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxRows)
+    .map(([t]) => t);
+
+  // 3) build rows (videos can appear in multiple rows)
+  const rows = topTags.map((tag) => ({
+    title: titleTag(tag),
+    key: `tag:${tag}`,
+    videos: videos.filter((v) =>
+      (Array.isArray(v.tags) ? v.tags : []).some((x) => normTag(x) === tag)
+    ),
+  }));
+
+  // 4) “Other” bucket (no tags OR none of the top tags)
+  const other = videos.filter((v) => {
+    const tags = Array.isArray(v.tags) ? v.tags : [];
+    if (!tags.length) return true;
+    return !tags.some((x) => topTags.includes(normTag(x)));
+  });
+
+  if (other.length) {
+    rows.push({ title: "Other", key: "tag:other", videos: other });
+  }
+
+  return rows;
+}
 
 export default function Home({ user, onRequireLogin }) {
   const outlet = useOutletContext?.() || {};
@@ -11,7 +70,6 @@ export default function Home({ user, onRequireLogin }) {
   const [params] = useSearchParams();
   const urlQ = (params.get("q") || "").trim();
 
-  const [categories, setCategories] = useState([]);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -28,17 +86,11 @@ export default function Home({ user, onRequireLogin }) {
     (async () => {
       setLoading(true);
       try {
-        if (!isSearching) {
-          const [cats, vids] = await Promise.all([getCategories(), getVideos()]);
-          if (!alive) return;
-          setCategories(cats);
-          setVideos(vids);
-        } else {
-          const vids = await getVideos({ q: urlQ });
-          if (!alive) return;
-          setCategories([]);
-          setVideos(vids);
-        }
+        // If your backend supports ?q filtering, this will work.
+        // If it doesn't, it still returns all videos and your UI can filter/sort later.
+        const vids = await getVideos(isSearching ? { q: urlQ } : {});
+        if (!alive) return;
+        setVideos(Array.isArray(vids) ? vids : []);
       } catch (e) {
         console.error("Home fetch failed:", e);
         if (!alive) return;
@@ -53,22 +105,13 @@ export default function Home({ user, onRequireLogin }) {
     };
   }, [isSearching, urlQ]);
 
-  const grouped = useMemo(() => {
+  // -----------------------
+  // Tag shelves (Home mode)
+  // -----------------------
+  const tagRows = useMemo(() => {
     if (isSearching) return [];
-    const map = new Map();
-
-    for (const v of videos) {
-      const key = v.category || "Other";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(v);
-    }
-
-    const ordered = [];
-    for (const c of categories) if (map.has(c)) ordered.push([c, map.get(c)]);
-    for (const [c, arr] of map.entries()) if (!categories.includes(c)) ordered.push([c, arr]);
-
-    return ordered;
-  }, [isSearching, videos, categories]);
+    return buildRowsByTags(videos, { maxRows: 8, minCount: 2 });
+  }, [isSearching, videos]);
 
   // -----------------------
   // Search Grid Mode
@@ -92,7 +135,9 @@ export default function Home({ user, onRequireLogin }) {
             <div className="emptySub">
               Would you like to{" "}
               {user ? (
-                <Link to="/create" className="createLink">create it?</Link>
+                <Link to="/create" className="createLink">
+                  create it?
+                </Link>
               ) : (
                 <button
                   type="button"
@@ -131,15 +176,15 @@ export default function Home({ user, onRequireLogin }) {
         <div className="loading">Loading…</div>
       ) : (
         <div className="feedInner">
-          {grouped.map(([cat, vids]) => {
+          {tagRows.map((row) => {
             const startIndex = cursor;
-            cursor += vids.length;
+            cursor += row.videos.length;
 
             return (
               <VideoShelf
-                key={cat}
-                title={cat}
-                videos={vids}
+                key={row.key}
+                title={row.title}
+                videos={row.videos}
                 user={user}
                 onRequireLogin={onRequireLogin}
                 startIndex={startIndex}

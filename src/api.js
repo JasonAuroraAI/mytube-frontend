@@ -13,12 +13,13 @@ function qs(paramsObj = {}) {
 }
 
 // VIDEOS
-export async function getVideos({ q, category } = {}) {
-  const url = `${API_BASE}/api/videos${qs({ q, category })}`;
+export async function getVideos({ q, category, sort } = {}) {
+  const url = `${API_BASE}/api/videos${qs({ q, category, sort })}`;
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) throw new Error(`getVideos failed: ${res.status}`);
   return res.json();
 }
+
 
 export async function getCategories() {
   const res = await fetch(`${API_BASE}/api/categories`, { credentials: "include" });
