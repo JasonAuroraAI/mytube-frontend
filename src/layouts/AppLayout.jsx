@@ -53,6 +53,21 @@ export default function AppLayout({
           >
             Create
           </NavLink>
+
+          <NavLink
+            to="/generate"
+            className={({ isActive }) =>
+              `folderTab ${isActive ? "active" : ""} ${!user ? "lockedTab" : ""}`
+            }
+            onClick={(e) => {
+              if (!user) {
+                e.preventDefault();
+                onOpenLogin("/generate"); // ✅ set redirect target
+              }
+            }}
+          >
+            Generate
+          </NavLink>
         </nav>
 
         <div className="folderBody">

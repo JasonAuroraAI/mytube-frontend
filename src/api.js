@@ -265,3 +265,16 @@ export async function whoami() {
   if (!res.ok) throw new Error(data?.error || `whoami failed: ${res.status}`);
   return data?.user ?? null;
 }
+
+export async function publishGeneratedVideo(payload) {
+  const res = await fetch(`${API_BASE}/api/generate/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || "Publish failed");
+  return data;
+}

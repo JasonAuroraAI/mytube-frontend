@@ -1,0 +1,295 @@
+/* Fullscreen overlay like your Login modal */
+.genPubBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 28px;
+
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+/* Card */
+.genPubCard {
+  width: min(820px, 96vw);
+  border-radius: 18px;
+  overflow: hidden;
+
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+
+  box-shadow:
+    0 40px 120px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Header row */
+.genPubTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+
+  padding: 18px 18px 12px;
+}
+
+.genPubHeading {
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+}
+
+.genPubSubtle {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* Close button top-right */
+.genPubClose {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.genPubClose:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Body */
+.genPubBody {
+  padding: 12px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  max-height: calc(90vh - 140px);
+  overflow: auto;
+}
+
+.genPubField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.genPubLabel {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* Pill inputs like Login modal */
+.genPubInput,
+.genPubTextarea,
+.genPubSelect {
+  width: 100%;
+  border-radius: 14px;
+
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(235, 244, 255, 0.95);
+
+  color: rgba(0, 0, 0, 0.88);
+  padding: 12px 14px;
+
+  outline: none;
+  font-size: 13px;
+}
+
+.genPubTextarea {
+  border-radius: 16px;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.genPubInput:focus,
+.genPubTextarea:focus,
+.genPubSelect:focus {
+  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.25);
+  border-color: rgba(124, 92, 255, 0.35);
+}
+
+/* Two-up row */
+.genPubRow2 {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .genPubRow2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Footer */
+.genPubBottom {
+  padding: 12px 18px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.genPubActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Buttons like Login modal */
+.genPubBtn {
+  padding: 10px 14px;
+  border-radius: 12px;
+
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.genPubBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.genPubBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.genPubBtn.primary {
+  background: rgba(124, 92, 255, 0.22);
+  border: 1px solid rgba(124, 92, 255, 0.35);
+}
+
+.gpOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: grid;
+  place-items: center;
+  z-index: 9999;
+}
+
+.gpModal {
+  width: min(720px, calc(100vw - 40px));
+  border-radius: 18px;
+  background: rgba(20, 22, 26, 0.92);
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: 0 18px 80px rgba(0,0,0,0.55);
+  overflow: hidden;
+}
+
+.gpTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.gpTitle {
+  font-weight: 900;
+  font-size: 18px;
+}
+
+.gpSub {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+
+.gpX {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.25);
+  color: rgba(255,255,255,0.9);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.gpBody {
+  padding: 16px 18px 18px;
+}
+
+.gpField { margin-bottom: 12px; }
+.gpLabel { display:block; font-size: 12px; opacity: 0.85; margin-bottom: 6px; font-weight: 700; }
+
+.gpInput, .gpTextarea, .gpSelect {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.25);
+  color: rgba(255,255,255,0.92);
+  padding: 10px 12px;
+  outline: none;
+}
+
+.gpTextarea { resize: vertical; }
+
+.gpRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.gpBottom {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.gpBtn {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.92);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.gpBtn.primary {
+  background: rgba(124, 92, 255, 0.18);
+  border: 1px solid rgba(124, 92, 255, 0.28);
+}
+
+.gpBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.gpError {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 80, 80, 0.10);
+  border: 1px solid rgba(255, 80, 80, 0.22);
+  color: rgba(255,255,255,0.92);
+  font-size: 12px;
+}
+
+.gpHint {
+  margin-top: 10px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.muted { opacity: 0.7; }

@@ -8,6 +8,8 @@ import Watch from "./pages/Watch.jsx";
 import Create from "./pages/Create.jsx";
 import Profile from "./pages/Profile.jsx";
 import EditProfile from "./pages/EditProfile.jsx";
+import Generate from "./pages/Generate.jsx";
+
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -104,6 +106,11 @@ export default function App() {
           <Route
             path="/create"
             element={<Create user={user} onRequireLogin={openLogin} />}
+          />
+
+          <Route 
+          path="/generate" 
+          element={<Generate user={user} onRequireLogin={openLogin} />} 
           />
 
           {/* ✅ Edit profile (logged in) */}

@@ -132,7 +132,7 @@ export default function Header({
                 🪙 {user.tokens}
               </span>
               <span className="rating">
-                 ⭐ {Number(ratingVal).toFixed(2) ?? "—"} ({reviewCountVal})
+                ⭐ {ratingVal == null ? "—" : Number(ratingVal).toFixed(2)} ({reviewCountVal})
               </span>
 
               <button
