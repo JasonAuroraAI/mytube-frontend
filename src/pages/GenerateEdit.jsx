@@ -175,9 +175,15 @@ export default function GenerateEdit({ user }) {
   const resumeTokenRef = useRef(0);
 
   // Constants
-  const PPS = 40;
+// Zoom (pixels-per-second). Bigger = zoom in, smaller = zoom out.
+  const [pps, setPps] = useState(40);
+  const PPS = pps; // keep your existing math mostly unchanged
   const MIN_LEN = 0.25;
   const EDGE_SNAP_SEC = 0.2;
+  const prevPpsRef = useRef(pps);
+
+  // UI-only duration overrides for videos missing durationSeconds
+  const [libDurMap, setLibDurMap] = useState(() => new Map());
 
   // Tracks
   const VIDEO_TRACKS = [{ kind: "video", track: 0, label: "V1" }];
@@ -1457,6 +1463,56 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerSrc]);
 
+  useEffect(() => {
+  const viewport = timelineViewportRef.current;
+  if (!viewport) return;
+
+  const t = playheadRef.current ?? playhead;
+  const prev = prevPpsRef.current || pps;
+
+  // Keep the playhead positioned consistently by adjusting scrollLeft by delta pixels
+  const oldX = t * prev;
+  const newX = t * pps;
+  viewport.scrollLeft = Math.max(0, viewport.scrollLeft + (newX - oldX));
+
+  prevPpsRef.current = pps;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [pps]);
+
+  useEffect(() => {
+  if (!libraryVideos?.length) return;
+
+  let cancelled = false;
+
+  (async () => {
+    for (const v of libraryVideos) {
+      if (cancelled) return;
+
+      const id = String(v?.id ?? "");
+      if (!id) continue;
+
+      const provided = Number(v.durationSeconds);
+      if (Number.isFinite(provided) && provided > 0.01) continue;
+
+      if (libDurMap.has(id)) continue;
+
+      const d = await getVideoDurationSeconds(v);
+      if (cancelled) return;
+
+      setLibDurMap((prev) => {
+        const next = new Map(prev);
+        next.set(id, d);
+        return next;
+      });
+    }
+  })();
+
+  return () => {
+    cancelled = true;
+  };
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [libraryVideos]);
+
   // ✅ Button icon derived from actual state
   const playPauseIcon = useMemo(() => {
     const v = videoRef.current;
@@ -1507,8 +1563,18 @@ export default function GenerateEdit({ user }) {
                 {libraryVideos.map((v) => {
                   const isActive = selectedVideo?.id === v.id;
                   const src = thumbUrl(v);
-                  const dur = Number(v.durationSeconds);
-                  const durLabel = Number.isFinite(dur) && dur > 0 ? fmtTime(dur) : "—";
+                  const id = String(v.id);
+                    const provided = Number(v.durationSeconds);
+                    const fallback = libDurMap.get(id);
+
+                    const dur =
+                      Number.isFinite(provided) && provided > 0.01
+                        ? provided
+                        : Number.isFinite(fallback) && fallback > 0.01
+                        ? fallback
+                        : null;
+
+                    const durLabel = dur != null ? fmtTime(dur) : "…";
 
                   return (
                     <div
@@ -1531,13 +1597,13 @@ export default function GenerateEdit({ user }) {
                           {v.title}
                         </div>
                         <div className="genEditLibSub">
-                          <span className="muted">dur:</span> {durLabel}
+                          <span className="muted">Duration: </span> {durLabel}
                         </div>
                       </div>
 
                       <div className="genEditLibActions">
                         <div className="muted" style={{ fontSize: 11, fontWeight: 800 }}>
-                          drag →
+                          
                         </div>
                       </div>
                     </div>
@@ -1681,6 +1747,37 @@ export default function GenerateEdit({ user }) {
             </button>
           </div>
 
+          {/* Zoom control */}
+          <div className="genEditZoomRow" role="group" aria-label="Timeline zoom">
+            <div className="genEditZoomLabel">
+              <span className="muted">Zoom</span>{" "}
+              <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
+            </div>
+
+            <input
+              className="genEditZoomSlider"
+              type="range"
+              min={2}
+              max={80}
+              step={1}
+              value={pps}
+              onChange={(e) => setPps(Number(e.target.value) || 40)}
+              style={{
+                "--zoom-track-bg": `linear-gradient(
+                  90deg,
+                  rgba(140,90,255,1) 0%,
+                  rgba(140,90,255,1) ${(pps - 2) / (80 - 2) * 100}%,
+                  rgba(255,255,255,0.25) ${(pps - 2) / (80 - 2) * 100}%,
+                  rgba(255,255,255,0.25) 100%
+                )`
+              }}
+            />
+
+            <button type="button" className="genEditZoomBtn" onClick={() => setPps(40)}>
+              Reset
+            </button>
+          </div>
+
           {/* Timeline */}
           <div className="genEditTimelineShell">
             <div className="genEditTimelineMulti">
@@ -1742,7 +1839,8 @@ export default function GenerateEdit({ user }) {
                             <div className="genEditLaneContent">
                               {laneClips.map((c) => {
                                 const left = (Number(c.start) || 0) * PPS;
-                                const width = Math.max(140, clipLen(c) * PPS);
+                                const MIN_PX = Math.max(6, MIN_LEN * PPS); // MIN_LEN=0.25, PPS=40 => 10px
+                                const width = Math.max(MIN_PX, clipLen(c) * PPS);
                                 const isActive = c.key === activeClipKey;
 
                                 return (
