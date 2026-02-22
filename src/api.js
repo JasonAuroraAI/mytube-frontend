@@ -278,3 +278,41 @@ export async function publishGeneratedVideo(payload) {
   if (!res.ok) throw new Error(data?.error || "Publish failed");
   return data;
 }
+
+export async function listProjects() {
+  const r = await fetch(`${API_BASE}/api/generate/projects`, {
+    credentials: "include",
+  });
+  if (!r.ok) throw new Error("Failed to fetch projects");
+  return r.json();
+}
+
+export async function createProject(title) {
+  const r = await fetch(`${API_BASE}/api/generate/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ title }),
+  });
+  if (!r.ok) throw new Error("Failed to create project");
+  return r.json();
+}
+
+export async function loadProject(id) {
+  const r = await fetch(`${API_BASE}/api/generate/projects/${id}`, {
+    credentials: "include",
+  });
+  if (!r.ok) throw new Error("Failed to load project");
+  return r.json();
+}
+
+export async function saveProject(id, payload) {
+  const r = await fetch(`${API_BASE}/api/generate/projects/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error("Failed to save project");
+  return r.json();
+}

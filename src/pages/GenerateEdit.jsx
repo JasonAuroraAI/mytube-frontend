@@ -1,7 +1,52 @@
+// GenerateEdit.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import "./GenerateEdit.css";
 import { getUserVideos, whoami, streamUrl, thumbUrl } from "../api.js";
 import GeneratePublishModal from "./GeneratePublishModal.jsx";
+
+const PROJECTS_INDEX_LS_KEY = "mytube_generate_projects_v1"; // list of { id, sequenceTitle, updatedAt }
+
+function safeJsonParse(s, fallback) {
+  try {
+    const v = JSON.parse(s);
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function makeProjectId() {
+  return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function projectKey(id) {
+  return `genproj:${id}`;
+}
+
+function loadProjectIndex() {
+  if (typeof window === "undefined") return [];
+  const raw = window.localStorage.getItem(PROJECTS_INDEX_LS_KEY);
+  const arr = safeJsonParse(raw, []);
+  return Array.isArray(arr) ? arr : [];
+}
+
+function saveProjectIndex(arr) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PROJECTS_INDEX_LS_KEY, JSON.stringify(arr));
+}
+
+function loadProjectById(id) {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(projectKey(id));
+  const obj = safeJsonParse(raw, null);
+  return obj && typeof obj === "object" ? obj : null;
+}
+
+function saveProjectById(id, payload) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(projectKey(id), JSON.stringify(payload));
+}
 
 function fmtTime(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -11,7 +56,6 @@ function fmtTime(seconds) {
 }
 
 function fmtRulerLabel(seconds) {
-  // ruler wants 0:05 style
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
   const m = Math.floor(s / 60);
   const r = s % 60;
@@ -19,130 +63,229 @@ function fmtRulerLabel(seconds) {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
-function clipLen(c) {
-  return Math.max(0, (Number(c.out) || 0) - (Number(c.in) || 0));
-}
-
-function makeTimelineItem(video, start, sourceDuration) {
-  const srcDur = Number(sourceDuration ?? video.durationSeconds ?? 12);
-  return {
-    key: `${video.id}-${start}-${Date.now()}`,
-    video,
-    start, // timeline start
-    sourceDuration: srcDur, // full length of source
-    in: 0, // in-point within source
-    out: srcDur, // out-point within source
-  };
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(n, b));
 }
 
 function snapSeconds(t, step) {
   return Math.round(t / step) * step;
 }
 
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(n, b));
+function clipLen(c) {
+  return Math.max(0, (Number(c.out) || 0) - (Number(c.in) || 0));
+}
+
+/**
+ * Multi-track clip model
+ * kind: "video" | "audio"
+ * track: number
+ */
+function makeTimelineItem({ kind, track, video, start, sourceDuration }) {
+  const srcDur = Number(sourceDuration ?? video?.durationSeconds ?? 12);
+  return {
+    key: `${kind}-${video?.id ?? "x"}-${track}-${start}-${Date.now()}`,
+    kind,
+    track,
+    video,
+    start,
+    sourceDuration: srcDur,
+    in: 0,
+    out: srcDur,
+  };
 }
 
 export default function GenerateEdit({ user }) {
-  const [libTab, setLibTab] = useState("video");
+  const nav = useNavigate();
+  const { projectId: routeProjectId } = useParams();
 
+  // -------- Project state --------
+  const [projectId, setProjectId] = useState(routeProjectId || "");
+  const [dirty, setDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const [sequenceTitle, setSequenceTitle] = useState("Timeline");
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+
+  const [clips, setClips] = useState([]);
+  const [playhead, setPlayhead] = useState(0);
+  const [activeClipKey, setActiveClipKey] = useState(null);
+
+  const [publishOpen, setPublishOpen] = useState(false);
+
+  // Library
+  const [libTab, setLibTab] = useState("video");
   const [me, setMe] = useState(null);
   const [libraryVideos, setLibraryVideos] = useState([]);
   const [loadingLib, setLoadingLib] = useState(false);
   const [libErr, setLibErr] = useState("");
-
   const [selectedVideo, setSelectedVideo] = useState(null);
-
-  const [timeline, setTimeline] = useState([]);
-  const [playhead, setPlayhead] = useState(0); // TIMELINE seconds
-  const [activeClipKey, setActiveClipKey] = useState(null);
-
-  // Sequence name (editable “Timeline” label)
-  const [sequenceTitle, setSequenceTitle] = useState("Timeline");
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-
-  // Export modal
-  const [publishOpen, setPublishOpen] = useState(false);
 
   // Refs
   const timelineViewportRef = useRef(null);
-  const timelineTrackRef = useRef(null);
+  const timelineScrollRef = useRef(null);
+  const timelineOriginRef = useRef(null);
   const titleInputRef = useRef(null);
 
+  // ✅ Single viewer element
   const videoRef = useRef(null);
-  const isScrubbingRef = useRef(false);
 
+  // Player UI
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+
+  const durationCacheRef = useRef(new Map());
+
+  // Interaction refs
+  const isScrubbingRef = useRef(false);
   const isDraggingPlayheadRef = useRef(false);
 
   const isDraggingClipRef = useRef(false);
   const dragClipKeyRef = useRef(null);
   const dragClipStartRef = useRef(0);
   const dragStartClientXRef = useRef(0);
+  const dragStartClientYRef = useRef(0);
+  const dragOrigTrackRef = useRef(null);
   const didMoveClipRef = useRef(false);
 
-  // Trim refs
   const isTrimmingRef = useRef(false);
-  const trimSideRef = useRef(null); // "l" | "r"
+  const trimSideRef = useRef(null);
   const trimKeyRef = useRef(null);
   const trimStartXRef = useRef(0);
-  const trimOrigRef = useRef(null); // { start, in, out, sourceDuration }
+  const trimOrigRef = useRef(null);
 
-  // Drag from library -> timeline (HTML5 DnD)
-  const durationCacheRef = useRef(new Map()); // videoId -> seconds
+  const didHydrateRef = useRef(false);
+
+  // Playback “state machine”
+  const wantedPlayRef = useRef(false); // user intent
+  const playheadRef = useRef(0);
+  const isAdvancingRef = useRef(false);
+
+  // What is currently loaded in the <video> (avoid accidental src churn)
+  const loadedClipKeyRef = useRef(null);
+  const loadedSrcRef = useRef("");
+
+  // Avoid stale async loads/seeks
+  const loadTokenRef = useRef(0);
+
+  // Resume retry token
+  const resumeTokenRef = useRef(0);
 
   // Constants
   const PPS = 40;
   const MIN_LEN = 0.25;
-
-  // Snap-to-clip-edge threshold (in seconds)
   const EDGE_SNAP_SEC = 0.2;
 
-  // ---------- helpers: duration ----------
-  async function getVideoDurationSeconds(video) {
-    if (!video?.id) return 12;
+  // Tracks
+  const VIDEO_TRACKS = [{ kind: "video", track: 0, label: "V1" }];
+  const AUDIO_TRACKS = [
+    { kind: "audio", track: 0, label: "A1" },
+    { kind: "audio", track: 1, label: "A2" },
+    { kind: "audio", track: 2, label: "A3" },
+  ];
+  const LANES = [...VIDEO_TRACKS, ...AUDIO_TRACKS];
 
-    // if API already provides it, trust it
-    const provided = Number(video.durationSeconds);
-    if (Number.isFinite(provided) && provided > 0.01) {
-      durationCacheRef.current.set(video.id, provided);
-      return provided;
+  // -------- Route -> ensure project id exists --------
+  useEffect(() => {
+    if (!routeProjectId) {
+      const newId = makeProjectId();
+      nav(`/generate/edit/${newId}`, { replace: true });
+      return;
+    }
+    setProjectId(routeProjectId);
+  }, [routeProjectId, nav]);
+
+  // -------- Load project on id change --------
+  useEffect(() => {
+    if (!projectId) return;
+
+    didHydrateRef.current = false;
+    setDirty(false);
+
+    const p = loadProjectById(projectId);
+    if (p) {
+      setSequenceTitle(String(p.sequenceTitle || "Timeline"));
+
+      const loaded = Array.isArray(p.clips) ? p.clips : Array.isArray(p.timeline) ? p.timeline : [];
+
+      const migrated = loaded
+        .filter(Boolean)
+        .map((c) => {
+          if (c.kind && Number.isFinite(Number(c.track))) return c;
+          return { ...c, kind: "video", track: 0 };
+        })
+        .map((c) => {
+          if (c?.kind === "video") return { ...c, track: 0 };
+          return c;
+        });
+
+      setClips(migrated);
+      setPlayhead(Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0);
+    } else {
+      const initial = {
+        id: projectId,
+        sequenceTitle: "Timeline",
+        updatedAt: Date.now(),
+        playhead: 0,
+        clips: [],
+      };
+      saveProjectById(projectId, initial);
+
+      const idx = loadProjectIndex();
+      const nextIdx = [{ id: projectId, sequenceTitle: "Timeline", updatedAt: initial.updatedAt }, ...idx.filter((x) => x?.id !== projectId)];
+      saveProjectIndex(nextIdx);
     }
 
-    // cache
-    const cached = durationCacheRef.current.get(video.id);
-    if (Number.isFinite(cached) && cached > 0.01) return cached;
+    // Reset viewer bookkeeping on load
+    loadedClipKeyRef.current = null;
+    loadedSrcRef.current = "";
+    wantedPlayRef.current = false;
+    setIsPlaying(false);
 
-    // load metadata using an offscreen video element
-    const src = streamUrl(video);
-    if (!src) return 12;
+    // Hard-stop the element too (prevents “phantom pause/resume” races on navigation)
+    const v = videoRef.current;
+    if (v) {
+      try {
+        v.pause();
+      } catch {}
+    }
 
-    const dur = await new Promise((resolve) => {
-      const el = document.createElement("video");
-      el.preload = "metadata";
-      el.muted = true;
-      el.playsInline = true;
-
-      const cleanup = () => {
-        el.removeAttribute("src");
-        el.load();
-      };
-
-      el.onloadedmetadata = () => {
-        const d = Number(el.duration);
-        cleanup();
-        resolve(Number.isFinite(d) && d > 0.01 ? d : 12);
-      };
-
-      el.onerror = () => {
-        cleanup();
-        resolve(12);
-      };
-
-      el.src = src;
+    requestAnimationFrame(() => {
+      didHydrateRef.current = true;
     });
+  }, [projectId]);
 
-    durationCacheRef.current.set(video.id, dur);
-    return dur;
+  // -------- Mark dirty when editing (after hydrate) --------
+  useEffect(() => {
+    if (!didHydrateRef.current) return;
+    setDirty(true);
+  }, [sequenceTitle, clips, playhead]);
+
+  // -------- Save project --------
+  async function saveProjectNow() {
+    if (!projectId) return;
+
+    try {
+      setIsSaving(true);
+
+      const payload = {
+        id: projectId,
+        sequenceTitle: String(sequenceTitle || "Timeline"),
+        updatedAt: Date.now(),
+        playhead: Number(playhead || 0),
+        clips: Array.isArray(clips) ? clips : [],
+      };
+
+      saveProjectById(projectId, payload);
+
+      const idx = loadProjectIndex();
+      const nextIdx = [{ id: projectId, sequenceTitle: payload.sequenceTitle, updatedAt: payload.updatedAt }, ...idx.filter((x) => x?.id !== projectId)];
+      saveProjectIndex(nextIdx);
+
+      setDirty(false);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   // -------- AUTH / LIBRARY --------
@@ -184,7 +327,6 @@ export default function GenerateEdit({ user }) {
         setLibraryVideos(arr);
         if (!selectedVideo && arr.length) setSelectedVideo(arr[0]);
 
-        // warm cache quickly (optional)
         for (const v of arr.slice(0, 10)) {
           const d = Number(v.durationSeconds);
           if (Number.isFinite(d) && d > 0.01) durationCacheRef.current.set(v.id, d);
@@ -204,51 +346,139 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.username, user?.username]);
 
-  // -------- TIMELINE METRICS --------
-  const timelineSorted = useMemo(() => {
-    return timeline.slice().sort((a, b) => a.start - b.start);
-  }, [timeline]);
+  // Rebind stale video objects
+  useEffect(() => {
+    if (!libraryVideos.length) return;
+    setClips((prev) =>
+      prev.map((c) => {
+        if (c?.kind !== "video") return c;
+        const vid = c?.video;
+        if (!vid?.id) return c;
+        const fresh = libraryVideos.find((v) => String(v.id) === String(vid.id));
+        return fresh ? { ...c, video: fresh } : c;
+      })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryVideos.length]);
+
+  // -------- Duration helper --------
+  async function getVideoDurationSeconds(video) {
+    if (!video?.id) return 12;
+
+    const provided = Number(video.durationSeconds);
+    if (Number.isFinite(provided) && provided > 0.01) {
+      durationCacheRef.current.set(video.id, provided);
+      return provided;
+    }
+
+    const cached = durationCacheRef.current.get(video.id);
+    if (Number.isFinite(cached) && cached > 0.01) return cached;
+
+    const src = streamUrl(video);
+    if (!src) return 12;
+
+    const dur = await new Promise((resolve) => {
+      const el = document.createElement("video");
+      el.preload = "metadata";
+      el.muted = true;
+      el.playsInline = true;
+
+      const cleanup = () => {
+        el.removeAttribute("src");
+        el.load();
+      };
+
+      el.onloadedmetadata = () => {
+        const d = Number(el.duration);
+        cleanup();
+        resolve(Number.isFinite(d) && d > 0.01 ? d : 12);
+      };
+
+      el.onerror = () => {
+        cleanup();
+        resolve(12);
+      };
+
+      el.src = src;
+    });
+
+    durationCacheRef.current.set(video.id, dur);
+    return dur;
+  }
+
+  // -------- Timeline metrics --------
+  const clipsSorted = useMemo(() => {
+    return clips.slice().sort((a, b) => (a.start - b.start) || (Number(b.track) || 0) - (Number(a.track) || 0));
+  }, [clips]);
 
   const timelineEnd = useMemo(() => {
-    if (!timelineSorted.length) return 0;
-    return Math.max(...timelineSorted.map((c) => c.start + clipLen(c)));
-  }, [timelineSorted]);
+    if (!clipsSorted.length) return 0;
+    return Math.max(...clipsSorted.map((c) => (Number(c.start) || 0) + clipLen(c)));
+  }, [clipsSorted]);
 
   const timelineWidth = Math.max(600, Math.ceil((timelineEnd + 5) * PPS));
   const playheadMax = Math.max(0, Math.ceil(timelineEnd));
 
-  // UI-selected clip (for highlight)
-  const activeClip = useMemo(() => {
-    if (!activeClipKey) return null;
-    return timeline.find((x) => x.key === activeClipKey) || null;
-  }, [timeline, activeClipKey]);
-
-  // Clip under playhead (drives playback)
-  const currentClip = useMemo(() => {
-    const t = playhead;
-    return (
-      timelineSorted.find((c) => t >= c.start && t < c.start + clipLen(c)) || null
-    );
-  }, [timelineSorted, playhead]);
-
-  const playbackVideo = currentClip?.video || activeClip?.video || selectedVideo || null;
-
-  const playbackSrc = useMemo(() => {
-    if (!playbackVideo) return "";
-    return streamUrl(playbackVideo);
-  }, [playbackVideo]);
-
-  // -------- FIND CLIP AT TIME --------
-  function findClipAtTime(t) {
-    return timelineSorted.find((c) => t >= c.start && t < c.start + clipLen(c)) || null;
+  function clipCoversTime(c, t) {
+    const s = Number(c.start) || 0;
+    const e = s + clipLen(c);
+    return t >= s && t < e;
   }
 
-  // -------- TRACK -> TIME --------
-  function getTimeFromClientX(clientX) {
-    const track = timelineTrackRef.current;
-    if (!track) return 0;
+  function findVideoClipAtTime(t) {
+    const candidates = clipsSorted.filter((c) => c?.kind === "video" && clipCoversTime(c, t));
+    if (!candidates.length) return null;
+    // prefer the latest-starting clip if overlaps exist
+    candidates.sort((a, b) => (Number(b.start) || 0) - (Number(a.start) || 0));
+    return candidates[0];
+  }
 
-    const rect = track.getBoundingClientRect();
+  function findNextVideoStart(afterT) {
+    const t = Number(afterT) || 0;
+    let best = null;
+    for (const c of clipsSorted) {
+      if (c?.kind !== "video") continue;
+      const s = Number(c.start) || 0;
+      if (s > t && (best == null || s < best)) best = s;
+    }
+    return best;
+  }
+
+  function findPrevVideoStart(beforeT) {
+    const t = Number(beforeT) || 0;
+    let best = null;
+    for (const c of clipsSorted) {
+      if (c?.kind !== "video") continue;
+      const s = Number(c.start) || 0;
+      if (s < t && (best == null || s > best)) best = s;
+    }
+    return best;
+  }
+
+  /**
+   * ✅ FIX: “End of timeline” means the playhead is at/after timelineEnd,
+   * NOT “there is no next clip start” (that incorrectly flagged *inside the last clip*).
+   */
+  function atTimelineEnd(t) {
+    const tt = Number(t) || 0;
+    return tt >= Math.max(0, Number(timelineEnd) || 0) - 0.04;
+  }
+
+  const currentVideoClip = useMemo(() => findVideoClipAtTime(playhead), [clipsSorted, playhead]);
+
+  // ✅ IMPORTANT: viewer src is ONLY based on timeline clip at playhead
+  const viewerSrc = useMemo(() => {
+    const c = currentVideoClip;
+    if (!c?.video) return "";
+    return streamUrl(c.video) || "";
+  }, [currentVideoClip]);
+
+  // ✅ Measure time from time-origin surface
+  function getTimeFromClientX(clientX) {
+    const origin = timelineOriginRef.current;
+    if (!origin) return 0;
+
+    const rect = origin.getBoundingClientRect();
     const viewport = timelineViewportRef.current;
     const scrollLeft = viewport ? viewport.scrollLeft : 0;
 
@@ -256,158 +486,574 @@ export default function GenerateEdit({ user }) {
     return Math.max(0, x / PPS);
   }
 
-  // -------- SNAP TO NEAR CLIP EDGES --------
+  function getLaneFromClientY(clientY) {
+    const scroll = timelineScrollRef.current;
+    if (!scroll) return null;
+
+    const lanes = scroll.querySelectorAll("[data-lane-kind][data-lane-track]");
+    for (const el of lanes) {
+      const r = el.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom) {
+        return {
+          kind: el.getAttribute("data-lane-kind"),
+          track: Number(el.getAttribute("data-lane-track")),
+        };
+      }
+    }
+    return null;
+  }
+
   function snapToEdges(nextStart, movingKey) {
-    // snap moving clip start/end to other clip edges if close
-    const moving = timeline.find((c) => c.key === movingKey);
+    const moving = clips.find((c) => c.key === movingKey);
     if (!moving) return nextStart;
 
     const movingLen = clipLen(moving);
     const movingStart = nextStart;
     const movingEnd = nextStart + movingLen;
 
-    let best = null; // { value, dist }
+    let best = null;
+    const pool = clipsSorted.filter((c) => c?.kind === moving.kind);
 
-    for (const c of timelineSorted) {
+    for (const c of pool) {
       if (c.key === movingKey) continue;
       const s = c.start;
       const e = c.start + clipLen(c);
 
-      // snap start to other's start/end
       for (const target of [s, e]) {
         const d = Math.abs(movingStart - target);
         if (d <= EDGE_SNAP_SEC && (!best || d < best.dist)) best = { value: target, dist: d };
       }
-
-      // snap end to other's start/end (adjust start so end matches)
       for (const target of [s, e]) {
         const d = Math.abs(movingEnd - target);
-        if (d <= EDGE_SNAP_SEC && (!best || d < best.dist)) {
-          best = { value: target - movingLen, dist: d };
-        }
+        if (d <= EDGE_SNAP_SEC && (!best || d < best.dist)) best = { value: target - movingLen, dist: d };
       }
     }
 
     return best ? Math.max(0, best.value) : nextStart;
   }
 
-  // -------- TIMELINE time -> VIDEO time (respecting clip.in) --------
-  function seekTimelineTo(t) {
+  useEffect(() => {
+    playheadRef.current = playhead;
+  }, [playhead]);
+
+  // --------- Viewer: apply mute/vol immediately ---------
+  function applyMuteVol() {
     const v = videoRef.current;
-    const nextT = Math.max(0, t);
-    setPlayhead(nextT);
-
     if (!v) return;
-
-    const clip = findClipAtTime(nextT);
-    if (!clip) {
-      // keep it simple for now: if no clip, go to 0 on current src
-      try {
-        v.currentTime = 0;
-      } catch {}
-      return;
-    }
-
-    const local = clamp(nextT - clip.start, 0, clipLen(clip)); // 0..trimLen
-    const videoTime = (Number(clip.in) || 0) + local;
-
     try {
-      v.currentTime = videoTime;
+      v.muted = muted;
+      v.volume = clamp(Number(volume), 0, 1);
     } catch {}
   }
 
-  // When src changes, seek to correct local time once metadata is available
   useEffect(() => {
+    applyMuteVol();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [muted, volume]);
+
+  // Robust wait helper
+  function waitForEvent(el, evt, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      if (!el) return reject(new Error("no video element"));
+      let done = false;
+
+      const ok = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(true);
+      };
+      const err = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error(`error while waiting for ${evt}`));
+      };
+
+      const t = window.setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error(`timeout waiting for ${evt}`));
+      }, timeoutMs);
+
+      const cleanup = () => {
+        window.clearTimeout(t);
+        el.removeEventListener(evt, ok);
+        el.removeEventListener("error", err);
+      };
+
+      el.addEventListener(evt, ok, { once: true });
+      el.addEventListener("error", err, { once: true });
+    });
+  }
+
+  // Core: ensure correct clip loaded and seeked for a given timeline time
+  async function ensureLoadedForTimelineTime(t, { autoplay } = { autoplay: false }) {
     const v = videoRef.current;
     if (!v) return;
 
-    const onLoaded = () => {
-      if (!currentClip) return;
-      const local = clamp(playhead - currentClip.start, 0, clipLen(currentClip));
-      const videoTime = (Number(currentClip.in) || 0) + local;
+    const token = ++loadTokenRef.current;
+
+    const timelineT = Math.max(0, Number(t) || 0);
+    const clip = findVideoClipAtTime(timelineT);
+
+    // If in a gap: jump if user wants play, otherwise pause-ish (idle)
+    if (!clip || !clip.video) {
+      if (wantedPlayRef.current || autoplay) {
+        const ns = findNextVideoStart(timelineT);
+        if (ns == null) {
+          // end of timeline
+          wantedPlayRef.current = false;
+          try {
+            v.pause();
+          } catch {}
+          setIsPlaying(false);
+          loadedClipKeyRef.current = null;
+          loadedSrcRef.current = "";
+          return;
+        }
+        // jump to next clip start and keep playing
+        setPlayhead(ns);
+        playheadRef.current = ns;
+        return ensureLoadedForTimelineTime(ns, { autoplay: true });
+      }
+
       try {
-        v.currentTime = videoTime;
+        v.pause();
       } catch {}
-    };
+      setIsPlaying(false);
+      loadedClipKeyRef.current = null;
+      loadedSrcRef.current = "";
+      return;
+    }
 
-    v.addEventListener("loadedmetadata", onLoaded);
-    return () => v.removeEventListener("loadedmetadata", onLoaded);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playbackSrc]);
+    const src = streamUrl(clip.video) || "";
+    if (!src) return;
 
-  // Advance to next clip when current one ends (or reaches trim out)
-  function advanceToNextClip() {
-    if (!currentClip) return;
+    const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
+    const targetVideoTime = (Number(clip.in) || 0) + local;
 
-    const endT = currentClip.start + clipLen(currentClip);
-    // move a tiny epsilon forward so we fall into the next clip if it starts exactly at endT
-    const nextT = endT + 0.0001;
+    const needsSrcChange = loadedClipKeyRef.current !== clip.key || loadedSrcRef.current !== src;
 
-    const nextClip = findClipAtTime(nextT);
-    if (!nextClip) return;
+    if (needsSrcChange) {
+      // Pause before swapping src to avoid weird buffered state
+      try {
+        v.pause();
+      } catch {}
 
-    isScrubbingRef.current = true;
-    seekTimelineTo(nextT);
-    isScrubbingRef.current = false;
+      loadedClipKeyRef.current = clip.key;
+      loadedSrcRef.current = src;
 
-    // try keep playing
-    const v = videoRef.current;
-    if (v) {
-      v.play?.().catch(() => {});
+      // NOTE: React also renders src={viewerSrc}. Keeping this in sync reduces churn/races.
+      if ((v.getAttribute("src") || "") !== src) {
+        v.setAttribute("src", src);
+      }
+
+      try {
+        v.load();
+      } catch {}
+
+      try {
+        if (v.readyState < 1) {
+          await waitForEvent(v, "loadedmetadata", 8000);
+        }
+      } catch {}
+
+      if (loadTokenRef.current !== token) return;
+
+      applyMuteVol();
+
+      try {
+        v.currentTime = targetVideoTime;
+      } catch {}
+
+      if (v.readyState < 2) {
+        try {
+          await waitForEvent(v, "canplay", 5000);
+        } catch {}
+      }
+
+      if (loadTokenRef.current !== token) return;
+    } else {
+      applyMuteVol();
+      const cur = Number(v.currentTime || 0);
+      if (Math.abs(cur - targetVideoTime) > 0.03) {
+        try {
+          v.currentTime = targetVideoTime;
+        } catch {}
+      }
+    }
+
+    if (autoplay || wantedPlayRef.current) {
+      const p = v.play?.();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {
+          // autoplay can reject; pause-catcher / resume glue can retry on ready events
+        });
+      }
     }
   }
 
-  // VIDEO time -> TIMELINE time (respecting clip.in/out), plus auto-advance
+  // ---- Pause catcher: only pause at true end-of-timeline or user pause ----
+  function forceResume(reason = "") {
+    const v = videoRef.current;
+    if (!v) return;
+    if (!wantedPlayRef.current) return;
+
+    // ✅ FIX: Only treat as finished if playhead is at end.
+    const t = playheadRef.current ?? playhead;
+    if (atTimelineEnd(t)) {
+      wantedPlayRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+
+    const token = ++resumeTokenRef.current;
+
+    const attempt = (triesLeft) => {
+      if (!wantedPlayRef.current) return;
+      if (resumeTokenRef.current !== token) return;
+
+      if (!v.paused && !v.ended) return;
+
+      const p = v.play?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+      if (triesLeft <= 0) return;
+
+      window.setTimeout(() => attempt(triesLeft - 1), 120);
+    };
+
+    attempt(10);
+  }
+
+  // Transport: Play/Pause
+  async function togglePlay() {
+    const v = videoRef.current;
+    if (!v) return;
+
+    if (wantedPlayRef.current) {
+      wantedPlayRef.current = false;
+      try {
+        v.pause();
+      } catch {}
+      setIsPlaying(false);
+      return;
+    }
+
+    wantedPlayRef.current = true;
+
+    const t = playheadRef.current ?? playhead;
+    const cur = findVideoClipAtTime(t);
+
+    if (!cur) {
+      const ns = findNextVideoStart(t);
+      const target = ns != null ? ns : 0;
+      setPlayhead(target);
+      playheadRef.current = target;
+      await ensureLoadedForTimelineTime(target, { autoplay: true });
+      forceResume("togglePlay-gap");
+      return;
+    }
+
+    await ensureLoadedForTimelineTime(t, { autoplay: true });
+    forceResume("togglePlay");
+  }
+
+  function onSequenceScrub(value) {
+    const t = Number(value) || 0;
+    isScrubbingRef.current = true;
+
+    // Keep the element aligned while dragging the slider, but don’t autoplay mid-drag.
+    ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
+      setPlayhead(t);
+      playheadRef.current = t;
+    });
+  }
+
+  function onSequenceScrubCommit(value) {
+    const t = Number(value) || 0;
+    isScrubbingRef.current = false;
+    setPlayhead(t);
+    playheadRef.current = t;
+
+    ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("scrubCommit");
+    });
+  }
+
+  function enterFullscreen() {
+    const v = videoRef.current;
+    if (!v) return;
+    const req = v.requestFullscreen || v.webkitRequestFullscreen || v.mozRequestFullScreen || v.msRequestFullscreen;
+    try {
+      req?.call(v);
+    } catch {}
+  }
+
+  function goToStart() {
+    const t = 0;
+    isScrubbingRef.current = true;
+    setPlayhead(t);
+    playheadRef.current = t;
+    isScrubbingRef.current = false;
+    ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("goToStart");
+    });
+  }
+
+  function goToEnd() {
+    const t = Math.max(0, timelineEnd || 0);
+    isScrubbingRef.current = true;
+    setPlayhead(t);
+    playheadRef.current = t;
+    isScrubbingRef.current = false;
+    ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("goToEnd");
+    });
+  }
+
+  function prevClip() {
+    const t = playheadRef.current ?? playhead;
+    const ps = findPrevVideoStart(t);
+    const target = ps == null ? 0 : ps;
+
+    isScrubbingRef.current = true;
+    setPlayhead(target);
+    playheadRef.current = target;
+    isScrubbingRef.current = false;
+
+    ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("prevClip");
+    });
+  }
+
+  function nextClip() {
+    const t = playheadRef.current ?? playhead;
+    const ns = findNextVideoStart(t);
+    const target = ns == null ? Math.max(0, timelineEnd || 0) : ns;
+
+    isScrubbingRef.current = true;
+    setPlayhead(target);
+    playheadRef.current = target;
+    isScrubbingRef.current = false;
+
+    ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("nextClip");
+    });
+  }
+
+  // Advance only when real clip out is reached
+  async function advanceToNextClip() {
+    if (isAdvancingRef.current) return;
+    isAdvancingRef.current = true;
+
+    const t = playheadRef.current ?? playhead;
+    const cur = findVideoClipAtTime(t);
+
+    const endT = cur ? (Number(cur.start) || 0) + clipLen(cur) : t;
+    const nextStart = findNextVideoStart(endT + 0.0001);
+
+    if (nextStart == null) {
+      // end of timeline
+      wantedPlayRef.current = false;
+      setIsPlaying(false);
+      isAdvancingRef.current = false;
+      return;
+    }
+
+    setPlayhead(nextStart);
+    playheadRef.current = nextStart;
+
+    await ensureLoadedForTimelineTime(nextStart, { autoplay: true });
+    forceResume("advanceToNextClip");
+
+    isAdvancingRef.current = false;
+  }
+
+  // ✅ Keep UI isPlaying synced to actual <video>
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
 
-    const onTimeUpdate = () => {
+    const sync = () => {
+      setIsPlaying(!v.paused && !v.ended);
+    };
+
+    sync();
+    v.addEventListener("play", sync);
+    v.addEventListener("pause", sync);
+    v.addEventListener("ended", sync);
+
+    return () => {
+      v.removeEventListener("play", sync);
+      v.removeEventListener("pause", sync);
+      v.removeEventListener("ended", sync);
+    };
+  }, []);
+
+  // ✅ Pause catcher & resume-on-ready glue (with true end detection)
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const onPause = () => {
+      if (!wantedPlayRef.current) return;
+
+      // If we're actually at the end, stop intent. Otherwise, resume.
+      const t = playheadRef.current ?? playhead;
+
+      // ✅ Additional guard: don’t treat “pause during source swap” as end.
+      if (atTimelineEnd(t)) {
+        wantedPlayRef.current = false;
+        setIsPlaying(false);
+        return;
+      }
+
+      forceResume("pause");
+    };
+
+    const onWaiting = () => forceResume("waiting");
+    const onStalled = () => forceResume("stalled");
+    const onCanPlay = () => forceResume("canplay");
+    const onSeeked = () => forceResume("seeked");
+    const onLoadedMeta = () => forceResume("loadedmetadata");
+
+    v.addEventListener("pause", onPause);
+    v.addEventListener("waiting", onWaiting);
+    v.addEventListener("stalled", onStalled);
+    v.addEventListener("canplay", onCanPlay);
+    v.addEventListener("seeked", onSeeked);
+    v.addEventListener("loadedmetadata", onLoadedMeta);
+
+    return () => {
+      v.removeEventListener("pause", onPause);
+      v.removeEventListener("waiting", onWaiting);
+      v.removeEventListener("stalled", onStalled);
+      v.removeEventListener("canplay", onCanPlay);
+      v.removeEventListener("seeked", onSeeked);
+      v.removeEventListener("loadedmetadata", onLoadedMeta);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineEnd, clipsSorted.length, playhead]);
+
+  // Master clock: timeupdate drives playhead; and advances at out point
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const EPS_OUT = 0.06;
+
+    const onTick = () => {
       if (isScrubbingRef.current) return;
-      if (!currentClip) return;
 
-      const clipIn = Number(currentClip.in) || 0;
-      const clipOut = Number(currentClip.out) || 0;
+      const t = playheadRef.current ?? playhead;
+      const clip = findVideoClipAtTime(t);
 
-      const local = clamp((v.currentTime || 0) - clipIn, 0, clipLen(currentClip));
-      setPlayhead(currentClip.start + local);
+      // If we are playing and we hit a gap, jump forward immediately.
+      if (!clip) {
+        if (wantedPlayRef.current) {
+          ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("tick-gap"));
+        }
+        return;
+      }
 
-      // If we're at/after trimmed out, advance
-      if ((v.currentTime || 0) >= clipOut - 0.03) {
-        advanceToNextClip();
+      const clipIn = Number(clip.in) || 0;
+      const clipOut = Number(clip.out) || 0;
+
+      const local = clamp((v.currentTime || 0) - clipIn, 0, clipLen(clip));
+      const newPlayhead = (Number(clip.start) || 0) + local;
+
+      setPlayhead(newPlayhead);
+      playheadRef.current = newPlayhead;
+
+      // ✅ Only advance when the underlying video time reaches OUT (not when “no next start exists”)
+      if ((v.currentTime || 0) >= clipOut - EPS_OUT) {
+        if (!isAdvancingRef.current) advanceToNextClip();
       }
     };
 
-    const onSeeked = () => {
-      if (isScrubbingRef.current) return;
-      if (!currentClip) return;
+    v.addEventListener("timeupdate", onTick);
+    return () => v.removeEventListener("timeupdate", onTick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipsSorted.length, playhead]);
 
-      const local = clamp(
-        (v.currentTime || 0) - (Number(currentClip.in) || 0),
-        0,
-        clipLen(currentClip)
-      );
+  // When clips change, re-align viewer to current playhead clip if needed
+  useEffect(() => {
+    const t = playheadRef.current ?? playhead;
+    const clip = findVideoClipAtTime(t);
+    if (!clip) return;
 
-      setPlayhead(currentClip.start + local);
+    if (loadedClipKeyRef.current !== clip.key) {
+      ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("clipsChanged");
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipsSorted.length]);
+
+  // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
+  // This is the “detect new source active and press play if already playing” fix.
+  useEffect(() => {
+    if (!viewerSrc) return;
+    const t = playheadRef.current ?? playhead;
+    ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("viewerSrcChanged");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerSrc]);
+
+  // -------- Playhead drag (global pointer listeners) --------
+  const dragPointerIdRef = useRef(null);
+
+  function onPlayheadPointerDown(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    isDraggingPlayheadRef.current = true;
+    isScrubbingRef.current = true;
+    dragPointerIdRef.current = e.pointerId;
+
+    const t = getTimeFromClientX(e.clientX);
+    setPlayhead(t);
+    playheadRef.current = t;
+    ensureLoadedForTimelineTime(t, { autoplay: false });
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    const onMove = (ev) => {
+      if (!isDraggingPlayheadRef.current) return;
+      if (dragPointerIdRef.current != null && ev.pointerId !== dragPointerIdRef.current) return;
+
+      const tt = getTimeFromClientX(ev.clientX);
+      setPlayhead(tt);
+      playheadRef.current = tt;
+      ensureLoadedForTimelineTime(tt, { autoplay: false });
     };
 
-    const onEnded = () => {
-      // Sometimes fires when source ends (not when trim ends). Still useful.
-      advanceToNextClip();
+    const onUp = (ev) => {
+      if (dragPointerIdRef.current != null && ev.pointerId !== dragPointerIdRef.current) return;
+
+      isDraggingPlayheadRef.current = false;
+      isScrubbingRef.current = false;
+      dragPointerIdRef.current = null;
+
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+
+      ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("playheadUp");
+      });
     };
 
-    v.addEventListener("timeupdate", onTimeUpdate);
-    v.addEventListener("seeked", onSeeked);
-    v.addEventListener("ended", onEnded);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
 
-    return () => {
-      v.removeEventListener("timeupdate", onTimeUpdate);
-      v.removeEventListener("seeked", onSeeked);
-      v.removeEventListener("ended", onEnded);
-    };
-  }, [currentClip?.key, playbackSrc]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // -------- PLAYHEAD HANDLE DRAG --------
   function onTimelinePointerDown(e) {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
@@ -416,48 +1062,31 @@ export default function GenerateEdit({ user }) {
     if (targetEl?.closest?.(".genEditClip")) return;
     if (targetEl?.closest?.(".genEditPlayheadHandle")) return;
 
+    const t = getTimeFromClientX(e.clientX);
     isScrubbingRef.current = true;
-    seekTimelineTo(getTimeFromClientX(e.clientX));
-    isScrubbingRef.current = false;
+    setPlayhead(t);
+    playheadRef.current = t;
+
+    ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
+      isScrubbingRef.current = false;
+      if (wantedPlayRef.current) {
+        ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timelineClick"));
+      }
+    });
   }
 
-  function onPlayheadPointerDown(e) {
-    e.preventDefault();
-    e.stopPropagation();
-
-    isDraggingPlayheadRef.current = true;
-    isScrubbingRef.current = true;
-
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
-
-    seekTimelineTo(getTimeFromClientX(e.clientX));
-  }
-
-  function onPlayheadPointerMove(e) {
-    if (!isDraggingPlayheadRef.current) return;
-    e.preventDefault();
-    seekTimelineTo(getTimeFromClientX(e.clientX));
-  }
-
-  function onPlayheadPointerUp(e) {
-    if (!isDraggingPlayheadRef.current) return;
-
-    isDraggingPlayheadRef.current = false;
-    isScrubbingRef.current = false;
-
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {}
-  }
-
-  // -------- CLIP ADD (used by drop) / REMOVE --------
-  async function addToTimelineAt(video, start) {
+  // -------- Clip add/remove --------
+  async function addVideoToTimelineAt(video, start) {
     const dur = await getVideoDurationSeconds(video);
-    const item = makeTimelineItem(video, Math.max(0, start), dur);
+    const item = makeTimelineItem({
+      kind: "video",
+      track: 0,
+      video,
+      start: Math.max(0, start),
+      sourceDuration: dur,
+    });
 
-    setTimeline((t) => [...t, item]);
+    setClips((t) => [...t, item]);
     setActiveClipKey(item.key);
 
     requestAnimationFrame(() => {
@@ -467,11 +1096,19 @@ export default function GenerateEdit({ user }) {
   }
 
   function removeFromTimeline(key) {
-    setTimeline((t) => t.filter((x) => x.key !== key));
+    setClips((t) => t.filter((x) => x.key !== key));
     if (activeClipKey === key) setActiveClipKey(null);
+
+    if (loadedClipKeyRef.current === key) {
+      loadedClipKeyRef.current = null;
+      loadedSrcRef.current = "";
+      ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("removeClip");
+      });
+    }
   }
 
-  // -------- CLIP DRAG (Shift snap = 1s, plus edge snap) --------
+  // -------- Clip drag (shift snap) --------
   function onClipPointerDown(e, clipKey) {
     if (isTrimmingRef.current) return;
 
@@ -482,16 +1119,16 @@ export default function GenerateEdit({ user }) {
     if (t?.closest?.(".genEditClipX")) return;
     if (t?.closest?.(".genEditTrimHandle")) return;
 
-    const clip = timeline.find((c) => c.key === clipKey);
+    const clip = clips.find((c) => c.key === clipKey);
     if (!clip) return;
 
     isDraggingClipRef.current = true;
     dragClipKeyRef.current = clipKey;
-    dragClipStartRef.current = clip.start;
+    dragClipStartRef.current = Number(clip.start) || 0;
     dragStartClientXRef.current = e.clientX;
+    dragStartClientYRef.current = e.clientY;
+    dragOrigTrackRef.current = { kind: clip.kind, track: Number(clip.track) || 0 };
     didMoveClipRef.current = false;
-
-    
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -508,21 +1145,33 @@ export default function GenerateEdit({ user }) {
     if (!key) return;
 
     const dxPx = e.clientX - dragStartClientXRef.current;
-    if (!didMoveClipRef.current && Math.abs(dxPx) < 3) return;
+    const dyPx = e.clientY - dragStartClientYRef.current;
 
+    if (!didMoveClipRef.current && Math.abs(dxPx) < 3 && Math.abs(dyPx) < 3) return;
     didMoveClipRef.current = true;
 
     const dxSeconds = dxPx / PPS;
     let nextStart = Math.max(0, dragClipStartRef.current + dxSeconds);
 
-    // shift = snap to 1 second grid
     if (e.shiftKey) nextStart = Math.max(0, snapSeconds(nextStart, 1));
-
-    // edge snap (only when not shift snapping hard — you can keep it on either way, but this feels nicer)
     nextStart = snapToEdges(nextStart, key);
 
-    setTimeline((prev) =>
-      prev.map((c) => (c.key === key ? { ...c, start: nextStart } : c))
+    const orig = dragOrigTrackRef.current;
+    let nextKind = orig?.kind;
+    let nextTrack = orig?.track;
+
+    const lane = getLaneFromClientY(e.clientY);
+    if (lane && orig?.kind === lane.kind) {
+      nextKind = lane.kind;
+      nextTrack = lane.track;
+      if (nextKind === "video") nextTrack = 0;
+    }
+
+    setClips((prev) =>
+      prev.map((c) => {
+        if (c.key !== key) return c;
+        return { ...c, start: nextStart, kind: nextKind, track: nextTrack };
+      })
     );
   }
 
@@ -533,29 +1182,31 @@ export default function GenerateEdit({ user }) {
     dragClipKeyRef.current = null;
     dragClipStartRef.current = 0;
     dragStartClientXRef.current = 0;
+    dragStartClientYRef.current = 0;
+    dragOrigTrackRef.current = null;
 
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
   }
 
-  // -------- TRIM (Shift snap = 1s) --------
+  // -------- Trim --------
   function onTrimPointerDown(e, clipKey, side) {
     e.preventDefault();
     e.stopPropagation();
 
-    const clip = timeline.find((c) => c.key === clipKey);
+    const clip = clips.find((c) => c.key === clipKey);
     if (!clip) return;
 
     isTrimmingRef.current = true;
-    trimSideRef.current = side; // "l" or "r"
+    trimSideRef.current = side;
     trimKeyRef.current = clipKey;
     trimStartXRef.current = e.clientX;
     trimOrigRef.current = {
-      start: clip.start,
-      in: clip.in,
-      out: clip.out,
-      sourceDuration: clip.sourceDuration,
+      start: Number(clip.start) || 0,
+      in: Number(clip.in) || 0,
+      out: Number(clip.out) || 0,
+      sourceDuration: Number(clip.sourceDuration) || 0,
     };
 
     try {
@@ -575,7 +1226,7 @@ export default function GenerateEdit({ user }) {
 
     const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
 
-    setTimeline((prev) =>
+    setClips((prev) =>
       prev.map((c) => {
         if (c.key !== key) return c;
 
@@ -585,24 +1236,16 @@ export default function GenerateEdit({ user }) {
         const start0 = Number(orig.start || 0);
 
         if (side === "r") {
-          // Right trim: change OUT, keep START/IN
           let nextOut = out0 + dxSeconds;
           if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
           nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur);
           return { ...c, out: nextOut };
         }
 
-        // Left trim: move START and IN together by delta, OUT stays
         let delta = dxSeconds;
-
-        // start cannot go below 0
         delta = Math.max(delta, -start0);
-
-        // in cannot go below 0
         delta = Math.max(delta, -in0);
-
-        // maintain min length
-        delta = Math.min(delta, (out0 - MIN_LEN) - in0);
+        delta = Math.min(delta, out0 - MIN_LEN - in0);
 
         let nextStart = start0 + delta;
         let nextIn = in0 + delta;
@@ -614,7 +1257,7 @@ export default function GenerateEdit({ user }) {
           let d = snapDelta;
           d = Math.max(d, -start0);
           d = Math.max(d, -in0);
-          d = Math.min(d, (out0 - MIN_LEN) - in0);
+          d = Math.min(d, out0 - MIN_LEN - in0);
 
           nextStart = start0 + d;
           nextIn = in0 + d;
@@ -639,15 +1282,13 @@ export default function GenerateEdit({ user }) {
     } catch {}
   }
 
-  // -------- Library drag start --------
+  // -------- Library drag/drop --------
   function onLibDragStart(e, v) {
     e.dataTransfer.effectAllowed = "copy";
     e.dataTransfer.setData("application/json", JSON.stringify({ videoId: v.id }));
-    // Optional: show nice ghost image by using the thumbnail node
   }
 
   function onTimelineDragOver(e) {
-    // allow drop
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   }
@@ -670,7 +1311,7 @@ export default function GenerateEdit({ user }) {
     if (!v) return;
 
     const t = getTimeFromClientX(e.clientX);
-    await addToTimelineAt(v, t);
+    await addVideoToTimelineAt(v, t);
   }
 
   // -------- Sequence title edit --------
@@ -688,53 +1329,64 @@ export default function GenerateEdit({ user }) {
     setIsEditingTitle(false);
   }
 
-  
-    const exportClips = useMemo(() => {
-    return timelineSorted.map((c) => ({
-        videoId: c.video.id,
-        start: c.start,
-        in: c.in,
-        out: c.out,
-    }));
-    }, [timelineSorted]);
-
-
-  // -------- RULER TICKS --------
+  // -------- Ruler ticks --------
   const rulerTicks = useMemo(() => {
     const end = Math.max(10, Math.ceil(timelineEnd + 1));
     const ticks = [];
-    for (let t = 0; t <= end; t += 1) {
-      const major = t % 5 === 0;
-      ticks.push({ t, major });
-    }
+    for (let t = 0; t <= end; t += 1) ticks.push({ t, major: t % 5 === 0 });
     return ticks;
   }, [timelineEnd]);
 
-  // -------- Export publish stub --------
-  async function onPublish(meta) {
-    // This is where you’ll POST to your server so it can run ffmpeg.
-    const payload = {
-      sequenceTitle,
-      ...meta,
-      timeline: timelineSorted.map((c) => ({
-        videoId: c.video.id,
-        start: c.start,
-        in: c.in,
-        out: c.out,
-      })),
-    };
+  // -------- Publish modal timeline payload (VIDEOS ONLY for now) --------
+  const publishTimeline = useMemo(() => {
+    return clipsSorted
+      .filter((c) => c?.kind === "video")
+      .map((c) => ({
+        videoId: c?.video?.id,
+        start: Number(c.start || 0),
+        in: Number(c.in || 0),
+        out: Number(c.out || 0),
+      }));
+  }, [clipsSorted]);
 
-    console.log("PUBLISH payload (stub):", payload);
+  const hasAnyClips = clipsSorted.length > 0;
 
-    // TODO: implement API call:
-    // await publishGenerated(payload)
-    // then navigate to the new video page.
-
-    alert("Publish stub: check console for payload.");
-    setPublishOpen(false);
+  function clipsForLane(kind, track) {
+    return clipsSorted.filter((c) => c?.kind === kind && Number(c.track) === Number(track));
   }
 
-  
+  function toggleMute() {
+    const next = !muted;
+    setMuted(next);
+    const v = videoRef.current;
+    if (v) v.muted = next;
+  }
+
+  function setPlayerVolume(next) {
+    const x = clamp(Number(next), 0, 1);
+    setVolume(x);
+    if (x > 0) setMuted(false);
+    const v = videoRef.current;
+    if (v) {
+      v.volume = x;
+      if (x > 0) v.muted = false;
+    }
+  }
+
+  // Light alignment when idle (keeps poster/first frame sane)
+  useEffect(() => {
+    if (!hasAnyClips) return;
+    if (wantedPlayRef.current) return;
+    ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerSrc]);
+
+  // ✅ Button icon derived from actual state
+  const playPauseIcon = useMemo(() => {
+    const v = videoRef.current;
+    const actuallyPlaying = v ? !v.paused && !v.ended : isPlaying;
+    return actuallyPlaying ? "⏸" : "▶";
+  }, [isPlaying, viewerSrc, playhead]);
 
   return (
     <div className="genEditWrap">
@@ -743,18 +1395,11 @@ export default function GenerateEdit({ user }) {
         onClose={() => setPublishOpen(false)}
         timelineName={sequenceTitle}
         defaultTitle={sequenceTitle}
-        timeline={timelineSorted.map((c) => ({
-            videoId: c.video?.id,
-            start: c.start,
-            in: c.in,
-            out: c.out,
-        }))}
+        timeline={publishTimeline}
         onPublished={(result) => {
-            console.log("Published:", result);
+          console.log("Published:", result);
         }}
-        />
-
-
+      />
 
       <div className="genEditGrid">
         {/* LEFT: Library */}
@@ -763,18 +1408,10 @@ export default function GenerateEdit({ user }) {
             <div className="genEditLibraryTitle">Library</div>
 
             <div className="genEditLibTabs" role="tablist" aria-label="Library type">
-              <button
-                type="button"
-                className={`genEditLibTab ${libTab === "video" ? "active" : ""}`}
-                onClick={() => setLibTab("video")}
-              >
+              <button type="button" className={`genEditLibTab ${libTab === "video" ? "active" : ""}`} onClick={() => setLibTab("video")}>
                 Video
               </button>
-              <button
-                type="button"
-                className={`genEditLibTab ${libTab === "audio" ? "active" : ""}`}
-                onClick={() => setLibTab("audio")}
-              >
+              <button type="button" className={`genEditLibTab ${libTab === "audio" ? "active" : ""}`} onClick={() => setLibTab("audio")}>
                 Audio
               </button>
             </div>
@@ -788,9 +1425,7 @@ export default function GenerateEdit({ user }) {
             ) : libErr ? (
               <div className="genEditEmpty">{libErr}</div>
             ) : libraryVideos.length === 0 ? (
-              <div className="genEditEmpty">
-                No uploads yet. Upload a video, then it’ll appear here.
-              </div>
+              <div className="genEditEmpty">No uploads yet. Upload a video, then it’ll appear here.</div>
             ) : (
               <div className="genEditLibList">
                 {libraryVideos.map((v) => {
@@ -813,9 +1448,7 @@ export default function GenerateEdit({ user }) {
                       }}
                       title="Drag onto the timeline"
                     >
-                      <div className="genEditLibThumb">
-                        {src ? <img src={src} alt="" /> : <div className="genEditThumbPh" />}
-                      </div>
+                      <div className="genEditLibThumb">{src ? <img src={src} alt="" /> : <div className="genEditThumbPh" />}</div>
 
                       <div className="genEditLibMeta">
                         <div className="genEditLibName" title={v.title}>
@@ -826,7 +1459,6 @@ export default function GenerateEdit({ user }) {
                         </div>
                       </div>
 
-                      {/* no button anymore */}
                       <div className="genEditLibActions">
                         <div className="muted" style={{ fontSize: 11, fontWeight: 800 }}>
                           drag →
@@ -842,15 +1474,56 @@ export default function GenerateEdit({ user }) {
 
         {/* CENTER: Playback + Timeline */}
         <main className="genEditMain">
+          {/* Top bar */}
+          <div className="genEditTopBar">
+            <div className="genEditTimelineTitle" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {isEditingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  className="genEditTimelineTitleInput"
+                  value={sequenceTitle}
+                  onChange={(e) => setSequenceTitle(e.target.value)}
+                  onBlur={commitTitle}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitTitle();
+                    if (e.key === "Escape") setIsEditingTitle(false);
+                  }}
+                />
+              ) : (
+                <button type="button" className="genEditTitleEditBtn" onClick={() => setIsEditingTitle(true)} title="Rename sequence">
+                  <span>{sequenceTitle}</span>
+                  <span className="genEditPencil" aria-hidden="true">
+                    ✎
+                  </span>
+                </button>
+              )}
+
+              <div className="muted" style={{ fontSize: 12, fontWeight: 800, opacity: 0.9 }}>
+                {isSaving ? "Saving…" : dirty ? "*" : ""}
+              </div>
+            </div>
+
+            <div className="genEditTimelineControls">
+              <button type="button" className="genEditBtn" onClick={saveProjectNow} disabled={isSaving || !dirty}>
+                Save
+              </button>
+
+              <button
+                type="button"
+                className="genEditBtn primary"
+                onClick={() => setPublishOpen(true)}
+                disabled={!clipsSorted.some((c) => c.kind === "video")}
+                title={!clipsSorted.some((c) => c.kind === "video") ? "Add video clips first" : "Export"}
+              >
+                Export
+              </button>
+            </div>
+          </div>
+
+          {/* Player */}
           <div className="genEditPlayerShell">
             <div className="genEditPlayerTop">
-              <div className="genEditPlayerLabel">
-                {currentClip?.video?.title
-                  ? `Playing: ${currentClip.video.title}`
-                  : playbackVideo?.title
-                  ? `Preview: ${playbackVideo.title}`
-                  : "Playback"}
-              </div>
+              <div className="genEditPlayerLabel">{currentVideoClip?.video?.title ? `Playing: ${currentVideoClip.video.title}` : "Playback"}</div>
 
               <div className="genEditPlayerRight">
                 <span className="muted">Playhead:</span> <span>{fmtTime(playhead)}</span>
@@ -858,184 +1531,204 @@ export default function GenerateEdit({ user }) {
             </div>
 
             <div className="genEditPlayer">
-              {playbackSrc ? (
-                <video
-                  ref={videoRef}
-                  key={playbackSrc}
-                  className="genEditVideo"
-                  controls
-                  preload="metadata"
-                  src={playbackSrc}
-                />
+              {viewerSrc ? (
+                <div className="genEditVideoWrap">
+                  <div className="genEditVideoStage">
+                    <video ref={videoRef} className="genEditVideo" preload="auto" playsInline src={viewerSrc} />
+
+                    <div className="genEditOverlayControls" role="group" aria-label="Player controls">
+                      <button type="button" className="genEditPBtn" onClick={togglePlay} disabled={!hasAnyClips} aria-label={isPlaying ? "Pause" : "Play"}>
+                        {playPauseIcon}
+                      </button>
+
+                      <div className="genEditPlayerTime">
+                        {fmtTime(playhead)} <span className="muted">/</span> {fmtTime(timelineEnd)}
+                      </div>
+
+                      <input
+                        className="genEditPlayerScrub"
+                        type="range"
+                        min={0}
+                        max={Math.max(0.01, timelineEnd || 0)}
+                        step={0.01}
+                        value={clamp(playhead, 0, Math.max(0.01, timelineEnd || 0))}
+                        onChange={(e) => onSequenceScrub(e.target.value)}
+                        onMouseUp={(e) => onSequenceScrubCommit(e.currentTarget.value)}
+                        onTouchEnd={(e) => onSequenceScrubCommit(e.currentTarget.value)}
+                        disabled={!hasAnyClips}
+                        aria-label="Scrub sequence"
+                      />
+
+                      <button type="button" className="genEditPBtn" onClick={toggleMute} aria-label="Mute">
+                        {muted || volume === 0 ? "Unmute" : "Mute"}
+                      </button>
+
+                      <input
+                        className="genEditPlayerVol"
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={muted ? 0 : volume}
+                        onChange={(e) => setPlayerVolume(e.target.value)}
+                        aria-label="Volume"
+                      />
+
+                      <button type="button" className="genEditPBtn" onClick={enterFullscreen} aria-label="Fullscreen">
+                        ⤢
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="genEditPlayerEmpty">&lt;Playback&gt;</div>
               )}
             </div>
           </div>
 
+          {/* Transport */}
+          <div className="genEditTransport" role="group" aria-label="Timeline transport controls">
+            <button type="button" className="genEditTransportBtn" onClick={goToStart} disabled={!hasAnyClips} title="Go to start">
+              ⏮
+            </button>
+            <button type="button" className="genEditTransportBtn" onClick={prevClip} disabled={!hasAnyClips} title="Previous clip">
+              ◀|
+            </button>
+            <button type="button" className="genEditTransportBtn primary" onClick={togglePlay} disabled={!hasAnyClips} title="Play / Pause">
+              {playPauseIcon}
+            </button>
+            <button type="button" className="genEditTransportBtn" onClick={nextClip} disabled={!hasAnyClips} title="Next clip">
+              |▶
+            </button>
+            <button type="button" className="genEditTransportBtn" onClick={goToEnd} disabled={!hasAnyClips} title="Go to end">
+              ⏭
+            </button>
+          </div>
+
+          {/* Timeline */}
           <div className="genEditTimelineShell">
-            <div className="genEditTimelineTop">
-              <div
-                className="genEditTimelineTitle"
-                style={{ display: "flex", alignItems: "center", gap: 10 }}
-              >
-                {isEditingTitle ? (
-                  <input
-                    ref={titleInputRef}
-                    className="genEditTimelineTitleInput"
-                    value={sequenceTitle}
-                    onChange={(e) => setSequenceTitle(e.target.value)}
-                    onBlur={commitTitle}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitTitle();
-                      if (e.key === "Escape") setIsEditingTitle(false);
-                    }}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="genEditTitleEditBtn"
-                    onClick={() => setIsEditingTitle(true)}
-                    title="Rename sequence"
-                  >
-                    <span>{sequenceTitle}</span>
-                    <span className="genEditPencil" aria-hidden="true">
-                      ✎
-                    </span>
-                  </button>
-                )}
-              </div>
-
-              <div className="genEditTimelineControls">
-                <button type="button" className="genEditBtn primary" onClick={() => setPublishOpen(true)}>
-                Export
-                </button>
-              </div>
-            </div>
-
-            <div className="genEditTimelineViewport" ref={timelineViewportRef}>
-              <div
-                className="genEditTimelineRuler"
-                style={{ width: timelineWidth }}
-                aria-hidden="true"
-              >
-                {rulerTicks.map(({ t, major }) => {
-                  const x = t * PPS;
-                  return (
-                    <div
-                      key={t}
-                      className={`genEditRulerTick ${major ? "major" : ""}`}
-                      style={{ left: `${x}px` }}
-                    >
-                      {major ? <div className="genEditRulerLabel">{fmtRulerLabel(t)}</div> : null}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div
-                ref={timelineTrackRef}
-                className="genEditTimelineTrack"
-                style={{ width: timelineWidth }}
-                onPointerDown={onTimelinePointerDown}
-                onDragOver={onTimelineDragOver}
-                onDrop={onTimelineDrop}
-                role="presentation"
-              >
-                {/* Playhead line */}
-                <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
-
-                {/* Playhead handle */}
-                <div
-                  className="genEditPlayheadHandle"
-                  style={{ left: `${playhead * PPS}px` }}
-                  onPointerDown={onPlayheadPointerDown}
-                  onPointerMove={onPlayheadPointerMove}
-                  onPointerUp={onPlayheadPointerUp}
-                  onPointerCancel={onPlayheadPointerUp}
-                  role="slider"
-                  aria-label="Playhead"
-                  aria-valuemin={0}
-                  aria-valuemax={playheadMax}
-                  aria-valuenow={playhead}
-                  tabIndex={0}
-                />
-
-                {timeline.map((c) => {
-                  const left = c.start * PPS;
-                  const width = Math.max(140, clipLen(c) * PPS);
-                  const isActive = c.key === activeClipKey;
-
-                  return (
-                    <div
-                      key={c.key}
-                      className={`genEditClip ${isActive ? "active" : ""}`}
-                      style={{ left: `${left}px`, width: `${width}px` }}
-                      onPointerDown={(e) => onClipPointerDown(e, c.key)}
-                      onPointerMove={onClipPointerMove}
-                      onPointerUp={onClipPointerUp}
-                      onPointerCancel={onClipPointerUp}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() => setActiveClipKey(c.key)}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      {/* Left trim handle */}
-                      <div
-                        className="genEditTrimHandle left"
-                        onPointerDown={(e) => onTrimPointerDown(e, c.key, "l")}
-                        onPointerMove={onTrimPointerMove}
-                        onPointerUp={onTrimPointerUp}
-                        onPointerCancel={onTrimPointerUp}
-                      />
-
-                      {/* Right trim handle */}
-                      <div
-                        className="genEditTrimHandle right"
-                        onPointerDown={(e) => onTrimPointerDown(e, c.key, "r")}
-                        onPointerMove={onTrimPointerMove}
-                        onPointerUp={onTrimPointerUp}
-                        onPointerCancel={onTrimPointerUp}
-                      />
-
-                      <div className="genEditClipTop">
-                        <div className="genEditClipTitle" title={c.video.title}>
-                          {c.video.title}
-                        </div>
-
-                        <button
-                          type="button"
-                          className="genEditClipX"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            removeFromTimeline(c.key);
-                          }}
-                          aria-label="Remove clip"
-                          title="Remove clip"
-                        >
-                          ✕
-                        </button>
-                      </div>
-
-                      <div className="genEditClipSub">
-                        <span className="muted">Start</span> {fmtTime(c.start)}
-                        <span className="dot">•</span>
-                        <span className="muted">Len</span> {fmtTime(clipLen(c))}
-                        <span className="dot">•</span>
-                        <span className="muted">In</span> {fmtTime(c.in)}
-                        <span className="dot">•</span>
-                        <span className="muted">Out</span> {fmtTime(c.out)}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {!timeline.length && (
-                  <div className="genEditTimelineEmpty">
-                    Drag clips from your library onto the timeline.
+            <div className="genEditTimelineMulti">
+              {/* Fixed gutter labels */}
+              <div className="genEditLaneGutter" aria-hidden="true">
+                <div className="genEditGutterSpacer" />
+                {LANES.map((lane) => (
+                  <div key={`${lane.kind}-${lane.track}`} className={`genEditGutterCell ${lane.kind}`}>
+                    {lane.label}
                   </div>
-                )}
+                ))}
+              </div>
+
+              {/* Scrollable time area */}
+              <div className="genEditTimelineViewport" ref={timelineViewportRef}>
+                <div className="genEditTimelineScroll" ref={timelineScrollRef}>
+                  {/* Ruler */}
+                  <div className="genEditTimelineRuler" style={{ width: timelineWidth }} aria-hidden="true">
+                    {rulerTicks.map(({ t, major }) => {
+                      const x = t * PPS;
+                      return (
+                        <div key={t} className={`genEditRulerTick ${major ? "major" : ""}`} style={{ left: `${x}px` }}>
+                          {major ? <div className="genEditRulerLabel">{fmtRulerLabel(t)}</div> : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Time origin surface */}
+                  <div
+                    ref={timelineOriginRef}
+                    className="genEditTimeOrigin"
+                    style={{ width: timelineWidth }}
+                    onPointerDown={onTimelinePointerDown}
+                    onDragOver={onTimelineDragOver}
+                    onDrop={onTimelineDrop}
+                    role="presentation"
+                  >
+                    {/* Playhead */}
+                    <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
+                    <div
+                      className="genEditPlayheadHandle"
+                      style={{ left: `${playhead * PPS}px` }}
+                      onPointerDown={onPlayheadPointerDown}
+                      role="slider"
+                      aria-label="Playhead"
+                      aria-valuemin={0}
+                      aria-valuemax={playheadMax}
+                      aria-valuenow={playhead}
+                      tabIndex={0}
+                    />
+
+                    <div className="genEditLanes">
+                      {LANES.map((lane) => {
+                        const laneClips = clipsForLane(lane.kind, lane.track);
+
+                        return (
+                          <div key={`${lane.kind}-${lane.track}`} className={`genEditLane ${lane.kind}`} data-lane-kind={lane.kind} data-lane-track={lane.track}>
+                            <div className="genEditLaneContent">
+                              {laneClips.map((c) => {
+                                const left = (Number(c.start) || 0) * PPS;
+                                const width = Math.max(140, clipLen(c) * PPS);
+                                const isActive = c.key === activeClipKey;
+
+                                return (
+                                  <div
+                                    key={c.key}
+                                    className={`genEditClip ${isActive ? "active" : ""} ${c.kind}`}
+                                    style={{ left: `${left}px`, width: `${width}px` }}
+                                    onPointerDown={(e) => onClipPointerDown(e, c.key)}
+                                    onPointerMove={onClipPointerMove}
+                                    onPointerUp={onClipPointerUp}
+                                    onPointerCancel={onClipPointerUp}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={() => setActiveClipKey(c.key)}
+                                    role="button"
+                                    tabIndex={0}
+                                  >
+                                    <div
+                                      className="genEditTrimHandle left"
+                                      onPointerDown={(e) => onTrimPointerDown(e, c.key, "l")}
+                                      onPointerMove={onTrimPointerMove}
+                                      onPointerUp={onTrimPointerUp}
+                                      onPointerCancel={onTrimPointerUp}
+                                    />
+                                    <div
+                                      className="genEditTrimHandle right"
+                                      onPointerDown={(e) => onTrimPointerDown(e, c.key, "r")}
+                                      onPointerMove={onTrimPointerMove}
+                                      onPointerUp={onTrimPointerUp}
+                                      onPointerCancel={onTrimPointerUp}
+                                    />
+
+                                    <div className="genEditClipTop">
+                                      <div className="genEditClipTitle" title={c?.video?.title || ""}>
+                                        {c?.video?.title || (c.kind === "audio" ? "Audio clip" : "Untitled clip")}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        className="genEditClipX"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          removeFromTimeline(c.key);
+                                        }}
+                                        aria-label="Remove clip"
+                                        title="Remove clip"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {!clips.length && <div className="genEditTimelineEmpty">Drag clips from your library onto the timeline.</div>}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

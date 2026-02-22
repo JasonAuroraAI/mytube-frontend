@@ -190,3 +190,16 @@
 .genEditClip:active {
   cursor: grabbing;
 }
+
+/* Remove link underline from Generate tabs */
+.genTabs a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* Also remove underline on hover/focus/active */
+.genTabs a:hover,
+.genTabs a:focus,
+.genTabs a:active {
+  text-decoration: none;
+}

@@ -1,6 +1,4 @@
-.genEditWrap {
-  width: 100%;
-}
+.genEditWrap { width: 100%; }
 
 .genEditGrid {
   display: grid;
@@ -9,13 +7,21 @@
   align-items: stretch;
 }
 
-/* Left Library */
+.genEditMain {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* =========================
+   Left Library
+   ========================= */
 .genEditLibrary {
   border-radius: 16px;
   background: rgba(0, 0, 0, 0.24);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 50px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 50px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   min-height: 640px;
 }
@@ -76,7 +82,6 @@
   gap: 8px;
 }
 
-/* Library item */
 .genEditLibItem {
   width: 100%;
   text-align: left;
@@ -93,11 +98,10 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
 
   cursor: pointer;
+  user-select: none;
 }
 
-.genEditLibItem:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
+.genEditLibItem:hover { background: rgba(255, 255, 255, 0.04); }
 
 .genEditLibItem.active {
   background: rgba(124, 92, 255, 0.12);
@@ -120,15 +124,9 @@
   display: block;
 }
 
-.genEditThumbPh {
-  width: 100%;
-  height: 100%;
-  opacity: 0.4;
-}
+.genEditThumbPh { width: 100%; height: 100%; opacity: 0.4; }
 
-.genEditLibMeta {
-  min-width: 0;
-}
+.genEditLibMeta { min-width: 0; }
 
 .genEditLibName {
   font-weight: 850;
@@ -138,133 +136,28 @@
   text-overflow: ellipsis;
 }
 
-.genEditLibSub {
-  font-size: 11px;
-  opacity: 0.75;
-  margin-top: 2px;
-}
+.genEditLibSub { font-size: 11px; opacity: 0.75; margin-top: 2px; }
 
-.genEditLibActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.genEditLibActions { display: flex; align-items: center; gap: 8px; }
 
-.genEditSmallBtn {
-  padding: 7px 9px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 800;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.genEditSmallBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-/* Center main */
-.genEditMain {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-/* Player shell */
-.genEditPlayerShell {
-  border-radius: 16px;
-  background: rgba(0, 0, 0, 0.24);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 50px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-}
-
-.genEditPlayerTop {
+/* =========================
+   Top bar (above player)
+   ========================= */
+.genEditTopBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-
+  gap: 16px;
   padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
+  margin-bottom: 12px;
 
-.genEditPlayerLabel {
-  font-weight: 900;
-  font-size: 13px;
-}
-
-.genEditPlayerRight {
-  font-size: 12px;
-  opacity: 0.85;
-}
-
-.genEditPlayer {
-  background: rgba(0, 0, 0, 0.55);
-  height: 360px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.genEditVideo {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-
-.genEditPlayerEmpty {
-  opacity: 0.75;
-  font-weight: 800;
-}
-
-/* Timeline shell */
-.genEditTimelineShell {
-  border-radius: 16px;
-  background: rgba(0, 0, 0, 0.24);
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 50px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-  min-height: 240px;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
 }
 
-.genEditTimelineTop {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.genEditTimelineTitle {
-  font-weight: 900;
-  font-size: 13px;
-}
-
-.genEditTimelineControls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.genEditSliderWrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  opacity: 0.9;
-}
-
-.genEditSliderWrap input[type="range"] {
-  width: 220px;
-}
+.genEditTimelineControls { display: flex; align-items: center; gap: 10px; }
 
 .genEditBtn {
   padding: 8px 12px;
@@ -277,258 +170,327 @@
   cursor: pointer;
 }
 
-.genEditBtn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
+.genEditBtn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .genEditBtn.primary {
   background: rgba(124, 92, 255, 0.18);
   border: 1px solid rgba(124, 92, 255, 0.28);
 }
 
-/* Timeline viewport */
-.genEditTimelineViewport {
-  padding: 12px;
-  overflow: auto;
+.genEditTitleEditBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 900;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
 }
 
-.genEditTimelineTrack {
-  position: relative;
-  height: 150px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.03);
+.genEditTitleEditBtn:hover { background: rgba(255, 255, 255, 0.04); }
+
+.genEditPencil { opacity: 0.7; font-weight: 900; }
+
+.genEditTimelineTitleInput {
+  width: 260px;
+  max-width: 55vw;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+/* =========================
+   Player
+   ========================= */
+.genEditPlayerShell {
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.24);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 50px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
 
-/* Playhead */
-.genEditPlayhead {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: rgba(255, 80, 80, 0.8);
-  box-shadow: 0 0 18px rgba(255, 80, 80, 0.3);
-  pointer-events: none;
+.genEditPlayerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* Clip */
-.genEditClip {
-  position: absolute;
-  top: 18px;
-  height: 80px;
-  border-radius: 14px;
-  padding: 10px;
+.genEditPlayerLabel { font-weight: 900; font-size: 13px; }
+.genEditPlayerRight { font-size: 12px; opacity: 0.85; }
 
-  background: rgba(255, 255, 255, 0.04);
+.genEditPlayer {
+  background: rgba(0, 0, 0, 0.55);
+  height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.genEditVideoWrap { width: 100%; height: 100%; display: flex; }
+
+.genEditVideoStage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.genEditVideo { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+.genEditOverlayControls {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 22px;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 16px 16px;
+  border-radius: 14px;
+
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.genEditVideoStage:hover .genEditOverlayControls,
+.genEditVideoStage:focus-within .genEditOverlayControls {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.genEditPBtn { padding: 6px 10px; border-radius: 10px; font-weight: 700; }
+
+.genEditPlayerTime { min-width: 120px; text-align: center; font-weight: 800; }
+.genEditPlayerScrub { flex: 1; }
+.genEditPlayerVol { width: 110px; }
+
+.genEditPlayerEmpty { opacity: 0.75; font-weight: 800; }
+
+/* =========================
+   Transport row
+   ========================= */
+.genEditTransport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(10px);
+}
+
+.genEditTransportBtn {
+  height: 36px;
+  min-width: 44px;
+  padding: 0 12px;
+
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 
   cursor: pointer;
   user-select: none;
 }
 
-.genEditClip:hover {
-  background: rgba(255, 255, 255, 0.05);
+.genEditTransportBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
-.genEditClip.active {
-  background: rgba(124, 92, 255, 0.14);
-  border: 1px solid rgba(124, 92, 255, 0.30);
+.genEditTransportBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.genEditTransportBtn.primary {
+  background: rgba(140, 90, 255, 0.22);
+  border-color: rgba(140, 90, 255, 0.35);
 }
 
-.genEditClipTop {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.genEditClipTitle {
-  font-weight: 950;
-  font-size: 12px;
-  white-space: nowrap;
+/* =========================
+   Timeline shell
+   ========================= */
+.genEditTimelineShell {
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 50px rgba(0, 0, 0, 0.4);
   overflow: hidden;
-  text-overflow: ellipsis;
+  min-height: 260px;
+  min-width: 0;
 }
 
-.genEditClipX {
-  width: 26px;
-  height: 26px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(0, 0, 0, 0.25);
-  color: rgba(255, 255, 255, 0.9);
-  font-weight: 900;
-  cursor: pointer;
+/* ✅ IMPORTANT: no gap/padding that affects x=0 alignment between gutter and time area */
+.genEditTimelineMulti {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  column-gap: 0;      /* ✅ removes the “mystery offset” between labels + time */
+  row-gap: 0;
+  padding: 12px;
+  min-width: 0;
 }
 
-.genEditClipSub {
-  font-size: 11px;
-  opacity: 0.8;
+/* Gutter (labels) */
+.genEditLaneGutter {
+  display: flex;
+  flex-direction: column;
+  padding-right: 10px; /* visual breathing room WITHOUT moving the time origin */
+  gap: 10px;
 }
 
-.genEditTimelineEmpty {
-  position: absolute;
-  inset: 0;
+/* Spacer that matches ruler stack height (22px ruler + 8px margin) */
+.genEditGutterSpacer {
+  height: 30px;
+}
+
+.genEditGutterCell {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(10px);
+
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.75;
-  font-size: 13px;
-  font-weight: 800;
+
+  color: rgba(255, 255, 255, 0.88);
+  font-weight: 900;
+  font-size: 12px;
 }
 
-.muted {
-  opacity: 0.7;
-}
+.genEditGutterCell.video { height: 74px; }
+.genEditGutterCell.audio { height: 64px; opacity: 0.95; }
 
-.dot {
-  opacity: 0.6;
-  margin: 0 6px;
-}
-
-.editorMain,
-.editorBottom,
-.timelineWrap,
-.timelineRow {
-  min-width: 0;
-}
-
-
-
-/* The entire timeline section must NOT force page width */
-.timelinePanel {
-  min-width: 0; /* important inside flex layouts */
-}
-
-/* This is the “window” you look through */
-.timelineViewport {
-  width: 100%;
-  overflow-x: auto;     /* <-- gives you the slider */
-  overflow-y: hidden;
-  min-width: 0;         /* crucial for flex children */
-  padding-bottom: 10px; /* gives breathing room for scrollbar */
-  overscroll-behavior-x: contain;
-}
-
-/* This is the long strip that holds the clips */
-.timelineTrack {
-  display: flex;
-  gap: 12px;
-  width: max-content;   /* track can grow, viewport scrolls */
-  min-height: 120px;    /* whatever your lane height is */
-}
-
-.genEditMain { min-width: 0; }          /* flex child must be shrinkable */
-.genEditTimelineShell { min-width: 0; } /* same deal */
-
-.genEditTimelineViewport{
-  width: 100%;
-  overflow-x: auto;     /* <-- your “slider down below” */
-  overflow-y: hidden;
-  min-width: 0;
-  padding-bottom: 10px; /* breathing room for the scrollbar */
-}
-
-.genEditTimelineTrack{
-  position: relative;
-  width: max-content; /* (inline width still OK) */
-}
-
-
-
-
-
-@media (max-width: 920px) {
-  .genEditGrid {
-    grid-template-columns: 1fr;
-  }
-  .genEditLibrary {
-    min-height: 240px;
-  }
-  .genEditSliderWrap input[type="range"] {
-    width: 160px;
-  }
-}
-
-.genEditTimelineTrack {
-  cursor: pointer;
-}
-
-.genEditClip {
-  cursor: grab;
-}
-
-.genEditClip:active {
-  cursor: grabbing;
-}
-
-/* Playhead */
-.genEditPlayhead {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: rgba(255, 80, 80, 0.8);
-  box-shadow: 0 0 18px rgba(255, 80, 80, 0.3);
-
-  /* ✅ MUST be interactive */
-  pointer-events: auto;
-  cursor: ew-resize;
-  z-index: 50;
-}
-
-/* ✅ bigger invisible hit area so you can actually grab it */
-.genEditPlayhead::before {
-  content: "";
-  position: absolute;
-  left: -10px;
-  right: -10px;
-  top: 0;
-  bottom: 0;
-}
-
+/* Scroll viewport — ✅ NO left padding */
 .genEditTimelineViewport {
-  touch-action: pan-x;
+  overflow: auto;
+  padding: 0;         /* ✅ critical */
+  min-width: 0;
 }
 
-.genEditPlayhead {
-  touch-action: none; /* prevents the browser from stealing the drag */
+/* Inner scroll wrapper */
+.genEditTimelineScroll {
+  width: max-content;
+  min-width: 100%;
+  padding-left: 0;    /* ✅ critical */
 }
 
-/* Visual line ONLY (lets clicks pass through to clips) */
+/* Ruler */
+.genEditTimelineRuler {
+  position: relative;
+  height: 22px;
+  margin-bottom: 8px;
+  opacity: 0.9;
+}
+
+.genEditRulerTick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.genEditRulerTick.major { background: rgba(255, 255, 255, 0.22); }
+
+.genEditRulerLabel {
+  position: absolute;
+  top: 0;
+  left: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+/* ✅ TIME ORIGIN surface: NO border/padding/outline. left edge = time 0 */
+.genEditTimeOrigin {
+  position: relative;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+/* Lanes stack (inside time origin) */
+.genEditLanes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Lane */
+.genEditLane {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.genEditLane.video .genEditLaneContent { height: 74px; }
+.genEditLane.audio .genEditLaneContent { height: 64px; opacity: 0.96; }
+
+.genEditLaneContent { position: relative; }
+
+/* Playhead (no collision) */
 .genEditPlayheadLine {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 2px;
+  pointer-events: none;
   background: rgba(255, 80, 80, 0.8);
   box-shadow: 0 0 18px rgba(255, 80, 80, 0.3);
-  pointer-events: none;     /* ✅ don't block clip clicks */
-  z-index: 20;
+  z-index: 50;
 }
 
-/* Small draggable handle (only this is interactive) */
 .genEditPlayheadHandle {
   position: absolute;
-  top: 6px;                 /* sits at the top of track */
+  top: 6px;
   width: 16px;
   height: 16px;
-  transform: translateX(-7px); /* centers handle on line */
+  transform: translateX(-7px);
   border-radius: 6px;
 
   background: rgba(255, 80, 80, 0.95);
-  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
-  border: 1px solid rgba(255,255,255,0.18);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 
   cursor: ew-resize;
-  z-index: 60;              /* above clips */
-  touch-action: none;       /* ✅ prevent browser stealing drag */
+  z-index: 60;
+  touch-action: none;
 }
 
-/* optional: a little notch so it feels like an editor */
 .genEditPlayheadHandle::after {
   content: "";
   position: absolute;
@@ -542,34 +504,73 @@
   pointer-events: none;
 }
 
-.genEditPlayheadLine {
+/* Clips */
+.genEditClip {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  pointer-events: none;
-  background: rgba(255, 80, 80, 0.8);
-  box-shadow: 0 0 18px rgba(255, 80, 80, 0.3);
-  z-index: 20;
+  top: 10px;
+  height: calc(100% - 20px);
+  min-width: 140px;
+
+  padding: 10px 12px;
+  border-radius: 14px;
+
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+
+  cursor: grab;
+  user-select: none;
+  z-index: 55;
 }
 
-.genEditPlayheadHandle {
-  position: absolute;
-  top: 6px;
-  width: 16px;
-  height: 16px;
-  transform: translateX(-7px);
-  border-radius: 6px;
-  background: rgba(255, 80, 80, 0.95);
-  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
-  border: 1px solid rgba(255,255,255,0.18);
-  cursor: ew-resize;
-  z-index: 60;
-  touch-action: none;
+.genEditClip:active { cursor: grabbing; }
+.genEditClip:hover { background: rgba(255, 255, 255, 0.05); }
+
+.genEditClip.active {
+  background: rgba(124, 92, 255, 0.14);
+  border: 1px solid rgba(124, 92, 255, 0.30);
 }
 
-.genEditClip { position: absolute; }
+.genEditClipTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 
+.genEditClipTitle {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.1;
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.genEditClipX {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  cursor: pointer;
+}
+
+.genEditClipX:hover {
+  background: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.genEditClipSub { display: none !important; }
+
+/* Trim handles */
 .genEditTrimHandle {
   position: absolute;
   top: 0;
@@ -590,178 +591,41 @@
   left: 3px;
   right: 3px;
   border-radius: 6px;
-  background: rgba(255,255,255,0.12);
-  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   opacity: 0.0;
   transition: opacity 120ms ease;
 }
 
-.genEditClip:hover .genEditTrimHandle::after {
-  opacity: 1.0;
-}
+.genEditClip:hover .genEditTrimHandle::after { opacity: 1.0; }
 
-.genEditTrimHandle { z-index: 80; }
-.genEditClipTop, .genEditClipSub { position: relative; z-index: 10; }
-
-/* Make draggables feel nice */
-.genEditLibItem { user-select: none; }
-.genEditLibItem:active { cursor: grabbing; }
-
-/* Timeline drop highlight */
-.genEditTimelineTrack.dropOver {
-  outline: 2px dashed rgba(124, 92, 255, 0.6);
-  outline-offset: -6px;
-  background: rgba(124, 92, 255, 0.06);
-}
-
-.genEditTimelineTitleBtn {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  color: inherit;
-  font: inherit;
-  font-weight: 900;
-  cursor: text;
-}
-
-.genEditTimelineTitleBtn:hover {
-  opacity: 0.9;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.genEditTimelineTitleInput {
-  width: min(420px, 60vw);
-  padding: 6px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.95);
-  font-weight: 900;
-  font-size: 13px;
-  outline: none;
-}
-
-/* Timeline Title Editable */
-
-.genEditTimelineTitle {
-  position: relative;
-  font-weight: 900;
-  font-size: 13px;
-}
-
-.genEditTimelineTitleDisplay {
-  display: inline-flex;
+.genEditTimelineEmpty {
+  position: absolute;
+  inset: 0;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  cursor: text;
-  padding: 4px 8px;
-  border-radius: 10px;
-  transition: background 120ms ease;
-}
-
-.genEditTimelineTitleDisplay:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.genEditTimelineTitleText {
+  justify-content: center;
+  opacity: 0.75;
+  font-size: 13px;
+  font-weight: 800;
   pointer-events: none;
 }
 
-.genEditTimelineTitlePencil {
-  opacity: 0;
-  font-size: 12px;
-  transition: opacity 120ms ease;
+.muted { opacity: 0.7; }
+
+@media (max-width: 920px) {
+  .genEditGrid { grid-template-columns: 1fr; }
+  .genEditLibrary { min-height: 240px; }
 }
 
-.genEditTimelineTitleDisplay:hover .genEditTimelineTitlePencil {
-  opacity: 0.7;
-}
-
-.genEditTimelineTitleInput {
-  width: min(420px, 60vw);
-  padding: 6px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(124, 92, 255, 0.35);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.95);
-  font-weight: 900;
-  font-size: 13px;
-  outline: none;
-}
-
-.genEditTimelineTitleDisplay {
-  user-select: none;
-}
-
-/* Ruler */
-.genEditTimelineRuler {
+.genEditVideoStage {
   position: relative;
-  height: 22px;
-  margin-bottom: 8px;
-  opacity: 0.9;
 }
 
-.genEditRulerTick {
+.genEditVideo {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.genEditRulerTick.major {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-.genEditRulerLabel {
-  position: absolute;
-  top: 0;
-  left: 6px;
-  font-size: 11px;
-  font-weight: 800;
-  opacity: 0.75;
-  white-space: nowrap;
-}
-
-/* Editable timeline title */
-.genEditTitleEditBtn {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.95);
-  font-weight: 900;
-  font-size: 13px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 2px 6px;
-  border-radius: 10px;
-}
-
-.genEditTitleEditBtn:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.genEditPencil {
-  opacity: 0.7;
-  font-weight: 900;
-}
-
-.genEditTimelineTitleInput {
-  width: 260px;
-  max-width: 55vw;
-  padding: 6px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.95);
-  font-weight: 900;
-  font-size: 13px;
-}
-
-/* Library drag hint */
-.genEditLibItem[draggable="true"] {
-  user-select: none;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* or cover, your call */
 }

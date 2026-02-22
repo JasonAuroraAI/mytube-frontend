@@ -1,0 +1,150 @@
+.genDashPage {
+  padding: 24px;
+  color: #e9eef8;
+}
+
+.genDashTop {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.genDashTitle {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.genDashSub {
+  margin-top: 6px;
+  color: rgba(233, 238, 248, 0.65);
+  font-size: 13px;
+}
+
+.genDashBtn {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+  color: #e9eef8;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.genDashBtn:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.genDashBtn.primary {
+  background: rgba(129, 90, 255, 0.25);
+  border-color: rgba(129, 90, 255, 0.45);
+}
+
+.genDashBtn.primary:hover {
+  background: rgba(129, 90, 255, 0.32);
+}
+
+.genDashBtn.danger {
+  background: rgba(255, 70, 70, 0.10);
+  border-color: rgba(255, 70, 70, 0.25);
+}
+
+.genDashBtn.danger:hover {
+  background: rgba(255, 70, 70, 0.15);
+}
+
+.genDashCard {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.25);
+  padding: 16px;
+  margin-bottom: 18px;
+}
+
+.genDashCardTitle {
+  font-weight: 800;
+  margin-bottom: 12px;
+}
+
+.genDashRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.genDashInput {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05);
+  color: #e9eef8;
+  outline: none;
+}
+
+.genDashInput:focus {
+  border-color: rgba(129, 90, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(129, 90, 255, 0.18);
+}
+
+.genDashEmpty {
+  margin-top: 22px;
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px dashed rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.20);
+}
+
+.genDashEmptyTitle {
+  font-weight: 900;
+}
+
+.genDashEmptySub {
+  margin-top: 6px;
+  color: rgba(233, 238, 248, 0.65);
+}
+
+.genDashGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.genDashProjectCard {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+
+.genDashProjectMain {
+  padding: 16px;
+  cursor: pointer;
+}
+
+.genDashProjectName {
+  font-weight: 900;
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.genDashProjectMeta {
+  font-size: 12px;
+  color: rgba(233, 238, 248, 0.65);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.muted { opacity: 0.8; }
+.dot { opacity: 0.5; }
+
+.genDashProjectActions {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}

@@ -9,6 +9,10 @@ import Create from "./pages/Create.jsx";
 import Profile from "./pages/Profile.jsx";
 import EditProfile from "./pages/EditProfile.jsx";
 import Generate from "./pages/Generate.jsx";
+import GenerateAssets from "./pages/GenerateAssets.jsx";
+import GenerateShots from "./pages/GenerateShots.jsx";
+import GenerateDashboard from "./pages/GenerateDashboard.jsx";
+import GenerateEdit from "./pages/GenerateEdit.jsx";
 
 
 export default function App() {
@@ -108,10 +112,20 @@ export default function App() {
             element={<Create user={user} onRequireLogin={openLogin} />}
           />
 
-          <Route 
-          path="/generate" 
-          element={<Generate user={user} onRequireLogin={openLogin} />} 
-          />
+         <Route
+          path="/generate"
+          element={<Generate user={user} onRequireLogin={openLogin} />}
+        >
+          <Route index element={<Navigate to="assets" replace />} />
+          <Route path="assets" element={<GenerateAssets />} />
+          <Route path="shots" element={<GenerateShots />} />
+
+          {/* Edit tab goes here */}
+          <Route path="projects" element={<GenerateDashboard />} />
+
+          {/* Editor also lives under the same layout so tabs stay visible */}
+          <Route path="edit/:projectId" element={<GenerateEdit user={user} />} />
+        </Route>
 
           {/* ✅ Edit profile (logged in) */}
           <Route
@@ -131,6 +145,8 @@ export default function App() {
             path="/u/:username"
             element={<Profile user={user} onRequireLogin={openLogin} />}
           />
+
+          
 
         </Route>
       </Routes>
