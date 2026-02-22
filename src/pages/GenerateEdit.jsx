@@ -175,12 +175,41 @@ export default function GenerateEdit({ user }) {
   const resumeTokenRef = useRef(0);
 
   // Constants
-// Zoom (pixels-per-second). Bigger = zoom in, smaller = zoom out.
+  // Zoom (pixels-per-second). Bigger = zoom in, smaller = zoom out.
   const [pps, setPps] = useState(40);
   const PPS = pps; // keep your existing math mostly unchanged
   const MIN_LEN = 0.25;
   const EDGE_SNAP_SEC = 0.2;
   const prevPpsRef = useRef(pps);
+
+  // Tooling
+  const [tool, setTool] = useState("select"); // "select" | "razor"
+  const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
+  const RAZOR_SNAP_SEC = 0.25;
+
+  function snapRazorTime(t) {
+    const tt = Math.max(0, Number(t) || 0);
+
+    // Snap targets: playhead, whole seconds, and all clip edges
+    const targets = [];
+
+    targets.push(Number(playheadRef.current ?? playhead) || 0);
+    targets.push(snapSeconds(tt, 1)); // whole seconds
+
+    for (const c of clipsSorted) {
+      const s = Number(c.start) || 0;
+      const e = s + clipLen(c);
+      targets.push(s, e);
+    }
+
+    let best = { value: tt, dist: Infinity };
+    for (const x of targets) {
+      const d = Math.abs(tt - x);
+      if (d < best.dist) best = { value: x, dist: d };
+    }
+
+    return best.dist <= RAZOR_SNAP_SEC ? best.value : tt;
+  }
 
   // UI-only duration overrides for videos missing durationSeconds
   const [libDurMap, setLibDurMap] = useState(() => new Map());
@@ -428,6 +457,18 @@ export default function GenerateEdit({ user }) {
   const timelineWidth = Math.max(600, Math.ceil((timelineEnd + 5) * PPS));
   const playheadMax = Math.max(0, Math.ceil(timelineEnd));
 
+  function onTimelinePointerMove(e) {
+    if (tool !== "razor") return;
+    const raw = getTimeFromClientX(e.clientX);
+    const t = e.shiftKey ? snapRazorTime(raw) : raw;
+    setRazorHoverT(t);
+  }
+
+  function onTimelinePointerLeave() {
+    if (tool !== "razor") return;
+    setRazorHoverT(null);
+  }
+
   function clipCoversTime(c, t) {
     const s = Number(c.start) || 0;
     const e = s + clipLen(c);
@@ -455,6 +496,55 @@ export default function GenerateEdit({ user }) {
       if (s >= t - EPS && (best == null || s < best)) best = s;
     }
     return best;
+  }
+
+  function splitClipAtTime(clipKey, timelineT) {
+    setClips((prev) => {
+      const clip = prev.find((c) => c.key === clipKey);
+      if (!clip) return prev;
+
+      const start = Number(clip.start) || 0;
+      const in0 = Number(clip.in) || 0;
+      const out0 = Number(clip.out) || 0;
+
+      const len = Math.max(0, out0 - in0);
+      if (len <= MIN_LEN * 2) return prev;
+
+      // timelineT must be inside clip bounds
+      const local = clamp((Number(timelineT) || 0) - start, 0, len);
+      if (local <= MIN_LEN || local >= len - MIN_LEN) return prev;
+
+      const splitVideoTime = in0 + local;
+
+      const left = {
+        ...clip,
+        key: `${clip.key}-L-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        out: splitVideoTime,
+      };
+
+      const right = {
+        ...clip,
+        key: `${clip.key}-R-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        start: start + local,
+        in: splitVideoTime,
+        // out stays out0
+      };
+
+      // Replace clip with [left, right] in-place
+      const next = [];
+      for (const c of prev) {
+        if (c.key === clipKey) {
+          next.push(left, right);
+        } else {
+          next.push(c);
+        }
+      }
+
+      // Make the right side active (feels Premiere-ish)
+      setActiveClipKey(right.key);
+
+      return next;
+    });
   }
 
   function findPrevVideoStart(beforeT) {
@@ -1190,6 +1280,25 @@ export default function GenerateEdit({ user }) {
     }
   }
 
+  useEffect(() => {
+  const onKeyDown = (e) => {
+    // Don’t steal keys while typing
+    const tag = (e.target?.tagName || "").toLowerCase();
+    const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+    if (isTyping) return;
+
+    // Delete / Backspace removes selected clip
+    if ((e.key === "Delete" || e.key === "Backspace") && activeClipKey) {
+      e.preventDefault();
+      removeFromTimeline(activeClipKey);
+      return;
+    }
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  return () => window.removeEventListener("keydown", onKeyDown);
+}, [activeClipKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // -------- Clip drag (shift snap) --------
   function onClipPointerDown(e, clipKey) {
     if (isTrimmingRef.current) return;
@@ -1201,6 +1310,16 @@ export default function GenerateEdit({ user }) {
     if (t?.closest?.(".genEditClipX")) return;
     if (t?.closest?.(".genEditTrimHandle")) return;
 
+    // ✅ RAZOR MODE: click clip to split at mouse time
+    if (tool === "razor") {
+      const raw = getTimeFromClientX(e.clientX);
+      const tt = e.shiftKey ? snapRazorTime(raw) : raw;
+      setRazorHoverT(tt); // keeps the line “locked” to the exact cut momentarily
+      splitClipAtTime(clipKey, tt);
+      return;
+    }
+
+    // ✅ SELECT MODE (existing drag behavior)
     const clip = clips.find((c) => c.key === clipKey);
     if (!clip) return;
 
@@ -1479,6 +1598,21 @@ export default function GenerateEdit({ user }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [pps]);
 
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      // Don’t steal keys while typing
+      const tag = (e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+
+      if (e.key === "v" || e.key === "V") setTool("select");
+      if (e.key === "c" || e.key === "C") setTool("razor");
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   useEffect(() => {
   if (!libraryVideos?.length) return;
 
@@ -1521,7 +1655,7 @@ export default function GenerateEdit({ user }) {
   }, [isPlaying, viewerSrc, playhead]);
 
   return (
-    <div className="genEditWrap">
+    <div className={`genEditWrap ${tool === "razor" ? "toolRazor" : "toolSelect"}`}>
       <GeneratePublishModal
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
@@ -1749,6 +1883,25 @@ export default function GenerateEdit({ user }) {
 
           {/* Zoom control */}
           <div className="genEditZoomRow" role="group" aria-label="Timeline zoom">
+            <div className="genEditToolGroup" role="group" aria-label="Edit tools">
+              <button
+                type="button"
+                className={`genEditToolBtn ${tool === "select" ? "active" : ""}`}
+                onClick={() => setTool("select")}
+                title="Select (V)"
+              >
+                🖱
+              </button>
+
+              <button
+                type="button"
+                className={`genEditToolBtn ${tool === "razor" ? "active" : ""}`}
+                onClick={() => setTool("razor")}
+                title="Razor (C)"
+              >
+                ✂
+              </button>
+            </div>
             <div className="genEditZoomLabel">
               <span className="muted">Zoom</span>{" "}
               <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
@@ -1812,10 +1965,15 @@ export default function GenerateEdit({ user }) {
                     className="genEditTimeOrigin"
                     style={{ width: timelineWidth }}
                     onPointerDown={onTimelinePointerDown}
+                    onPointerMove={onTimelinePointerMove}
+                    onPointerLeave={onTimelinePointerLeave}
                     onDragOver={onTimelineDragOver}
                     onDrop={onTimelineDrop}
                     role="presentation"
                   >
+                    {tool === "razor" && razorHoverT != null && (
+                      <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} />
+                    )}
                     {/* Playhead */}
                     <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
                     <div

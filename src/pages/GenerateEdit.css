@@ -713,3 +713,64 @@
   border: 2px solid rgba(140,90,255,1);
   box-shadow: 0 0 10px rgba(140,90,255,0.6);
 }
+
+
+/* =========================
+   Tool row (Select / Razor)
+   ========================= */
+.genEditToolGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 14px;
+}
+
+.genEditToolBtn {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.genEditToolBtn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.genEditToolBtn.active {
+  background: rgba(140, 90, 255, 0.22);
+  border-color: rgba(140, 90, 255, 0.35);
+  box-shadow: 0 0 16px rgba(140, 90, 255, 0.18);
+}
+
+/* Razor cursor hints */
+.toolRazor .genEditTimeOrigin {
+  cursor: crosshair;
+}
+
+.toolRazor .genEditClip {
+  cursor: crosshair;
+}
+
+/* Razor preview line */
+.genEditRazorLine{
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(140, 90, 255, 0.22);
+  box-shadow: 0 0 10px rgba(255,255,255,0.18);
+  z-index: 6; /* above clips */
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+/* Make it feel like Premiere */
+.toolRazor .genEditTimeOrigin,
+.toolRazor .genEditClip{
+  cursor: crosshair;
+}
