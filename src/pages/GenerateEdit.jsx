@@ -436,13 +436,17 @@ export default function GenerateEdit({ user }) {
     return candidates[0];
   }
 
-  function findNextVideoStart(afterT) {
+  function findNextVideoStart(afterT, excludeKey = null) {
     const t = Number(afterT) || 0;
+    const EPS = 1e-6; // allow equality (butt-join)
     let best = null;
+
     for (const c of clipsSorted) {
       if (c?.kind !== "video") continue;
+      if (excludeKey && c.key === excludeKey) continue;
+
       const s = Number(c.start) || 0;
-      if (s > t && (best == null || s < best)) best = s;
+      if (s >= t - EPS && (best == null || s < best)) best = s;
     }
     return best;
   }
@@ -889,18 +893,16 @@ export default function GenerateEdit({ user }) {
   }
 
   // Advance only when real clip out is reached
-  async function advanceToNextClip() {
+  async function advanceToNextClip(endingClip = null) {
     if (isAdvancingRef.current) return;
     isAdvancingRef.current = true;
 
-    const t = playheadRef.current ?? playhead;
-    const cur = findVideoClipAtTime(t);
+    const cur = endingClip || findVideoClipAtTime(playheadRef.current ?? playhead);
 
-    const endT = cur ? (Number(cur.start) || 0) + clipLen(cur) : t;
-    const nextStart = findNextVideoStart(endT + 0.0001);
+    const endT = cur ? (Number(cur.start) || 0) + clipLen(cur) : (playheadRef.current ?? playhead);
+    const nextStart = findNextVideoStart(endT, cur?.key || null);
 
     if (nextStart == null) {
-      // end of timeline
       wantedPlayRef.current = false;
       setIsPlaying(false);
       isAdvancingRef.current = false;
@@ -912,7 +914,10 @@ export default function GenerateEdit({ user }) {
 
     await ensureLoadedForTimelineTime(nextStart, { autoplay: true });
     forceResume("advanceToNextClip");
-    ensureProgressKick("advanceToNextClip");
+
+    window.setTimeout(() => {
+      forceResume("advanceToNextClip-delayed");
+    }, 80);
 
     isAdvancingRef.current = false;
   }
@@ -951,7 +956,7 @@ export default function GenerateEdit({ user }) {
     return () => v.removeEventListener("timeupdate", onTimeUpdate);
   }, []);
 
-  // ✅ Pause catcher & resume-on-ready glue (with true end detection)
+  // ✅ Pause catcher & resume-on-ready glue
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -960,16 +965,18 @@ export default function GenerateEdit({ user }) {
       if (!wantedPlayRef.current) return;
       if (isSwappingSrcRef.current) return;
 
-      // If we're actually at the end, stop intent. Otherwise, resume.
-      const t = playheadRef.current ?? playhead;
+      const vv = videoRef.current;
+      if (!vv) return;
 
-      // ✅ Additional guard: don’t treat “pause during source swap” as end.
+      // ✅ If we're truly at the end of the whole timeline, stop intent.
+      const t = playheadRef.current ?? playhead;
       if (atTimelineEnd(t)) {
         wantedPlayRef.current = false;
         setIsPlaying(false);
         return;
       }
 
+      // Otherwise: unexpected pause (buffering / browser quirk) -> resume
       forceResume("pause");
     };
 
@@ -996,6 +1003,7 @@ export default function GenerateEdit({ user }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timelineEnd, clipsSorted.length]);
+
 
   // Master clock: timeupdate drives playhead; and advances at out point
   useEffect(() => {
@@ -1030,16 +1038,19 @@ export default function GenerateEdit({ user }) {
       // ✅ Only advance when the underlying video time reaches OUT (not when “no next start exists”)
       const ct = Number(v.currentTime || 0);
       if (ct >= (clipOut - EPS_OUT)) {
-        if (!isAdvancingRef.current) advanceToNextClip();
+        if (!isAdvancingRef.current) {
+          // IMPORTANT: advance based on the clip that is ending (trim-aware)
+          advanceToNextClip(clip);
+        }
       }
     };
-
-  
 
     v.addEventListener("timeupdate", onTick);
     return () => v.removeEventListener("timeupdate", onTick);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length, playhead]);
+
+
 
   // When clips change, re-align viewer to current playhead clip if needed
   useEffect(() => {
@@ -1055,27 +1066,6 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length]);
 
-  useEffect(() => {
-  const v = videoRef.current;
-  if (!v) return;
-
-  const onEnded = () => {
-    // If user intended playback, advance to next clip
-    if (!wantedPlayRef.current) return;
-    // If we're truly at end of timeline, stop
-    const t = playheadRef.current ?? playhead;
-    if (atTimelineEnd(t)) {
-      wantedPlayRef.current = false;
-      setIsPlaying(false);
-      return;
-    }
-    advanceToNextClip();
-  };
-
-  v.addEventListener("ended", onEnded);
-  return () => v.removeEventListener("ended", onEnded);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [timelineEnd, clipsSorted.length]);
 
   // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
   // This is the “detect new source active and press play if already playing” fix.
