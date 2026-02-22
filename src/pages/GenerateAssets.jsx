@@ -33,7 +33,7 @@ export default function GenerateAssets() {
       <div className="genGrid">
         <PlaceholderCard title="Characters" desc="Create a cast. Pick style, wardrobe, and variations." actionLabel="Create character" />
         <PlaceholderCard title="Backgrounds" desc="Generate environments: streets, rooms, skies, etc." actionLabel="Create background" />
-        <PlaceholderCard title="Props" desc="Objects used in scenes: phones, cars, weapons, etc." actionLabel="Create prop" />
+        <PlaceholderCard title="Audio" desc="Sound and music to be used in videos." actionLabel="Create Audio" />
         <PlaceholderCard title="Library" desc="Browse and manage generated assets." actionLabel="Open library" />
       </div>
     </SectionShell>

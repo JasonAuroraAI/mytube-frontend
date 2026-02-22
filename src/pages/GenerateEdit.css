@@ -774,3 +774,73 @@
 .toolRazor .genEditClip{
   cursor: crosshair;
 }
+
+/* ✅ new wrapper that contains header + lanes in one coordinate space */
+.genEditTimeStack{
+  position: relative;
+}
+
+/* ✅ header row above lanes */
+.genEditTimeHeader{
+  position: relative;
+  height: 30px;            /* matches your old 22 + 8 spacing */
+  margin-bottom: 8px;
+}
+
+/* the ruler now lives inside the header */
+.genEditTimeHeader .genEditTimelineRuler{
+  position: relative;
+  height: 22px;
+  margin-bottom: 0;        /* header owns spacing now */
+}
+
+/* transparent hit surface over the whole header row */
+.genEditTimeHeaderHit{
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+}
+
+/* lanes container stays as-is, but now it doesn't own clicks */
+.genEditTimeOrigin{
+  position: relative;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+/* ✅ Put the playhead handle inside the header row */
+.genEditPlayheadHandle{
+  top: 6px;                /* was already 6px; now relative to stack/header */
+}
+
+/* optional: make the little “stem” reach down into the lanes a bit */
+.genEditPlayheadHandle::after{
+  top: 14px;
+  height: 12px;
+}
+
+.genEditBoxSelect{
+  position: absolute;
+  z-index: 40;            /* below playhead handle (60), above lanes */
+  pointer-events: none;
+  border-radius: 8px;
+
+  border: 1px solid rgba(140, 90, 255, 0.85);
+  background: rgba(140, 90, 255, 0.18);
+  box-shadow: 0 0 14px rgba(140, 90, 255, 0.18);
+}
+
+/* Clip is currently inside the marquee box */
+.genEditClip.boxHot {
+  opacity: 0.75;
+  filter: brightness(1.05);
+  outline: 2px solid rgba(140, 90, 255, 0.35);
+  outline-offset: -2px;
+}
+
+/* If it’s already selected, don’t dim it */
+.genEditClip.selected.boxHot {
+  opacity: 1;
+  outline-color: rgba(140, 90, 255, 0.65);
+}

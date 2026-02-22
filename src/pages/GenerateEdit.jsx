@@ -109,6 +109,21 @@ export default function GenerateEdit({ user }) {
   const [clips, setClips] = useState([]);
   const [playhead, setPlayhead] = useState(0);
   const [activeClipKey, setActiveClipKey] = useState(null);
+  const [selectedClipKeys, setSelectedClipKeys] = useState(() => new Set());
+  const selectedClipKeysRef = useRef(new Set());
+  useEffect(() => {
+    selectedClipKeysRef.current = selectedClipKeys;
+  }, [selectedClipKeys]);
+
+  // --- Drag box select (marquee) ---
+  const [boxSel, setBoxSel] = useState(null); // { left, top, width, height } in px (relative to timeStack)
+  const [boxHoverKeys, setBoxHoverKeys] = useState(() => new Set()); // ✅ live hover highlight
+  const isBoxSelectingRef = useRef(false);
+  const boxStartRef = useRef({ x: 0, y: 0 }); // client coords
+  const boxAdditiveRef = useRef(false);
+
+  
+
 
   const [publishOpen, setPublishOpen] = useState(false);
 
@@ -123,7 +138,7 @@ export default function GenerateEdit({ user }) {
   // Refs
   const timelineViewportRef = useRef(null);
   const timelineScrollRef = useRef(null);
-  const timelineOriginRef = useRef(null);
+  const timelineOriginRef = useRef(null); // ✅ now refers to the time-stack (header + lanes)
   const titleInputRef = useRef(null);
 
   // ✅ Single viewer element
@@ -147,6 +162,9 @@ export default function GenerateEdit({ user }) {
   const dragStartClientYRef = useRef(0);
   const dragOrigTrackRef = useRef(null);
   const didMoveClipRef = useRef(false);
+  const dragGroupRef = useRef([]); // [{ key, start, kind, track }]
+  const dragGroupPrimaryKeyRef = useRef(null);
+  const dragGroupPrimaryStartRef = useRef(0);
 
   const isTrimmingRef = useRef(false);
   const trimSideRef = useRef(null);
@@ -186,30 +204,6 @@ export default function GenerateEdit({ user }) {
   const [tool, setTool] = useState("select"); // "select" | "razor"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
   const RAZOR_SNAP_SEC = 0.25;
-
-  function snapRazorTime(t) {
-    const tt = Math.max(0, Number(t) || 0);
-
-    // Snap targets: playhead, whole seconds, and all clip edges
-    const targets = [];
-
-    targets.push(Number(playheadRef.current ?? playhead) || 0);
-    targets.push(snapSeconds(tt, 1)); // whole seconds
-
-    for (const c of clipsSorted) {
-      const s = Number(c.start) || 0;
-      const e = s + clipLen(c);
-      targets.push(s, e);
-    }
-
-    let best = { value: tt, dist: Infinity };
-    for (const x of targets) {
-      const d = Math.abs(tt - x);
-      if (d < best.dist) best = { value: x, dist: d };
-    }
-
-    return best.dist <= RAZOR_SNAP_SEC ? best.value : tt;
-  }
 
   // UI-only duration overrides for videos missing durationSeconds
   const [libDurMap, setLibDurMap] = useState(() => new Map());
@@ -298,6 +292,177 @@ export default function GenerateEdit({ user }) {
     if (!didHydrateRef.current) return;
     setDirty(true);
   }, [sequenceTitle, clips, playhead]);
+
+
+    function rectsIntersect(a, b) {
+      return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+    }
+
+  function setSelectionFromKeys(keys, { additive } = { additive: false }) {
+    setSelectedClipKeys((prev) => {
+      const base = additive ? new Set(prev) : new Set();
+      for (const k of keys) base.add(k);
+      return base;
+    });
+
+    // Keep "active" sensible: last selected if any, else null
+    const arr = Array.from(keys || []);
+    if (arr.length) setActiveClipKey(arr[arr.length - 1]);
+    else if (!additive) setActiveClipKey(null);
+  }
+
+  function onLanesPointerDown(e) {
+    if (isDraggingClipRef.current) return;
+    if (isTrimmingRef.current) return;
+    if (tool === "razor") return; // keep lanes inert in razor mode, like Premiere
+
+    // Only start box-select when clicking "empty" lanes background
+    if (e.target?.closest?.(".genEditClip")) return;
+    if (e.target?.closest?.(".genEditPlayheadHandle")) return;
+
+    // We only want this inside lanes area — this handler is attached to lanes wrapper,
+    // so it won't fire for the header anyway.
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    isBoxSelectingRef.current = true;
+    boxAdditiveRef.current = !!e.shiftKey;
+
+    boxStartRef.current = { x: e.clientX, y: e.clientY };
+
+    // init a tiny box so it appears immediately
+    const stack = timelineOriginRef.current;
+    if (stack) {
+      const r = stack.getBoundingClientRect();
+      setBoxSel({
+        left: e.clientX - r.left,
+        top: e.clientY - r.top,
+        width: 1,
+        height: 1,
+      });
+    }
+
+    const onMove = (ev) => {
+      if (!isBoxSelectingRef.current) return;
+
+      const stackEl = timelineOriginRef.current;
+      if (!stackEl) return;
+
+      const r = stackEl.getBoundingClientRect();
+
+      const x1 = boxStartRef.current.x;
+      const y1 = boxStartRef.current.y;
+      const x2 = ev.clientX;
+      const y2 = ev.clientY;
+
+      const left = Math.min(x1, x2) - r.left;
+      const top = Math.min(y1, y2) - r.top;
+      const width = Math.abs(x2 - x1);
+      const height = Math.abs(y2 - y1);
+
+      setBoxSel({ left, top, width, height });
+
+      // ✅ LIVE highlight: compute what clips intersect the marquee *right now*
+      const selRectClient = {
+        left: Math.min(x1, x2),
+        top: Math.min(y1, y2),
+        right: Math.max(x1, x2),
+        bottom: Math.max(y1, y2),
+      };
+
+      const els = Array.from(document.querySelectorAll(".genEditClip[data-clip-key]"));
+      const hit = new Set();
+
+      for (const el of els) {
+        const cr = el.getBoundingClientRect();
+        const clipRect = { left: cr.left, top: cr.top, right: cr.right, bottom: cr.bottom };
+        if (rectsIntersect(selRectClient, clipRect)) {
+          const k = el.getAttribute("data-clip-key");
+          if (k) hit.add(k);
+        }
+      }
+
+      setBoxHoverKeys(hit);
+    };
+
+    const onUp = (ev) => {
+      if (!isBoxSelectingRef.current) return;
+      isBoxSelectingRef.current = false;
+
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+
+      const x1 = boxStartRef.current.x;
+      const y1 = boxStartRef.current.y;
+      const x2 = ev.clientX;
+      const y2 = ev.clientY;
+
+      const dragDx = Math.abs(x2 - x1);
+      const dragDy = Math.abs(y2 - y1);
+
+      // Treat as a "click" if the drag was tiny -> clear (unless shift, then do nothing)
+      if (dragDx < 3 && dragDy < 3) {
+        setBoxSel(null);
+        setBoxHoverKeys(new Set()); // ✅
+        if (!boxAdditiveRef.current) clearSelection();
+        return;
+      }
+
+      const selRectClient = {
+        left: Math.min(x1, x2),
+        top: Math.min(y1, y2),
+        right: Math.max(x1, x2),
+        bottom: Math.max(y1, y2),
+      };
+
+      // Find any clip element that intersects the box
+      const els = Array.from(document.querySelectorAll(".genEditClip[data-clip-key]"));
+      const hitKeys = [];
+
+      for (const el of els) {
+        const cr = el.getBoundingClientRect();
+        const clipRect = { left: cr.left, top: cr.top, right: cr.right, bottom: cr.bottom };
+        if (rectsIntersect(selRectClient, clipRect)) {
+          const k = el.getAttribute("data-clip-key");
+          if (k) hitKeys.push(k);
+        }
+      }
+
+      setSelectionFromKeys(hitKeys, { additive: boxAdditiveRef.current });
+      setBoxSel(null);
+      setBoxHoverKeys(new Set()); // ✅ clear highlight after selection
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }
+
+
+  // -- Selection --
+  function setSingleSelection(key) {
+    const next = new Set();
+    if (key) next.add(key);
+    setSelectedClipKeys(next);
+    setActiveClipKey(key || null);
+  }
+
+  function toggleSelectionKey(key) {
+    setSelectedClipKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setActiveClipKey(key);
+  }
+
+  function clearSelection() {
+    setSelectedClipKeys(new Set());
+    setActiveClipKey(null);
+  }
 
   // -------- Save project --------
   async function saveProjectNow() {
@@ -457,18 +622,6 @@ export default function GenerateEdit({ user }) {
   const timelineWidth = Math.max(600, Math.ceil((timelineEnd + 5) * PPS));
   const playheadMax = Math.max(0, Math.ceil(timelineEnd));
 
-  function onTimelinePointerMove(e) {
-    if (tool !== "razor") return;
-    const raw = getTimeFromClientX(e.clientX);
-    const t = e.shiftKey ? snapRazorTime(raw) : raw;
-    setRazorHoverT(t);
-  }
-
-  function onTimelinePointerLeave() {
-    if (tool !== "razor") return;
-    setRazorHoverT(null);
-  }
-
   function clipCoversTime(c, t) {
     const s = Number(c.start) || 0;
     const e = s + clipLen(c);
@@ -496,55 +649,6 @@ export default function GenerateEdit({ user }) {
       if (s >= t - EPS && (best == null || s < best)) best = s;
     }
     return best;
-  }
-
-  function splitClipAtTime(clipKey, timelineT) {
-    setClips((prev) => {
-      const clip = prev.find((c) => c.key === clipKey);
-      if (!clip) return prev;
-
-      const start = Number(clip.start) || 0;
-      const in0 = Number(clip.in) || 0;
-      const out0 = Number(clip.out) || 0;
-
-      const len = Math.max(0, out0 - in0);
-      if (len <= MIN_LEN * 2) return prev;
-
-      // timelineT must be inside clip bounds
-      const local = clamp((Number(timelineT) || 0) - start, 0, len);
-      if (local <= MIN_LEN || local >= len - MIN_LEN) return prev;
-
-      const splitVideoTime = in0 + local;
-
-      const left = {
-        ...clip,
-        key: `${clip.key}-L-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        out: splitVideoTime,
-      };
-
-      const right = {
-        ...clip,
-        key: `${clip.key}-R-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        start: start + local,
-        in: splitVideoTime,
-        // out stays out0
-      };
-
-      // Replace clip with [left, right] in-place
-      const next = [];
-      for (const c of prev) {
-        if (c.key === clipKey) {
-          next.push(left, right);
-        } else {
-          next.push(c);
-        }
-      }
-
-      // Make the right side active (feels Premiere-ish)
-      setActiveClipKey(right.key);
-
-      return next;
-    });
   }
 
   function findPrevVideoStart(beforeT) {
@@ -576,7 +680,7 @@ export default function GenerateEdit({ user }) {
     return streamUrl(c.video) || "";
   }, [currentVideoClip]);
 
-  // ✅ Measure time from time-origin surface
+  // ✅ Measure time from time-origin surface (time stack)
   function getTimeFromClientX(clientX) {
     const origin = timelineOriginRef.current;
     if (!origin) return 0;
@@ -638,6 +742,43 @@ export default function GenerateEdit({ user }) {
   useEffect(() => {
     playheadRef.current = playhead;
   }, [playhead]);
+
+  // -------- Razor snapping --------
+  function snapRazorTime(t) {
+    const tt = Math.max(0, Number(t) || 0);
+
+    // Snap targets: playhead, whole seconds, and all clip edges
+    const targets = [];
+
+    targets.push(Number(playheadRef.current ?? playhead) || 0);
+    targets.push(snapSeconds(tt, 1)); // whole seconds
+
+    for (const c of clipsSorted) {
+      const s = Number(c.start) || 0;
+      const e = s + clipLen(c);
+      targets.push(s, e);
+    }
+
+    let best = { value: tt, dist: Infinity };
+    for (const x of targets) {
+      const d = Math.abs(tt - x);
+      if (d < best.dist) best = { value: x, dist: d };
+    }
+
+    return best.dist <= RAZOR_SNAP_SEC ? best.value : tt;
+  }
+
+  function onTimelinePointerMove(e) {
+    if (tool !== "razor") return;
+    const raw = getTimeFromClientX(e.clientX);
+    const t = e.shiftKey ? snapRazorTime(raw) : raw;
+    setRazorHoverT(t);
+  }
+
+  function onTimelinePointerLeave() {
+    if (tool !== "razor") return;
+    setRazorHoverT(null);
+  }
 
   // --------- Viewer: apply mute/vol immediately ---------
   function applyMuteVol() {
@@ -1039,7 +1180,7 @@ export default function GenerateEdit({ user }) {
     };
   }, []);
 
-    // Track real playback progress so we can detect stalls
+  // Track real playback progress so we can detect stalls
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -1100,7 +1241,6 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timelineEnd, clipsSorted.length]);
 
-
   // Master clock: timeupdate drives playhead; and advances at out point
   useEffect(() => {
     const v = videoRef.current;
@@ -1131,11 +1271,10 @@ export default function GenerateEdit({ user }) {
       setPlayhead(newPlayhead);
       playheadRef.current = newPlayhead;
 
-      // ✅ Only advance when the underlying video time reaches OUT (not when “no next start exists”)
+      // ✅ Only advance when the underlying video time reaches OUT
       const ct = Number(v.currentTime || 0);
-      if (ct >= (clipOut - EPS_OUT)) {
+      if (ct >= clipOut - EPS_OUT) {
         if (!isAdvancingRef.current) {
-          // IMPORTANT: advance based on the clip that is ending (trim-aware)
           advanceToNextClip(clip);
         }
       }
@@ -1145,8 +1284,6 @@ export default function GenerateEdit({ user }) {
     return () => v.removeEventListener("timeupdate", onTick);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length, playhead]);
-
-
 
   // When clips change, re-align viewer to current playhead clip if needed
   useEffect(() => {
@@ -1162,9 +1299,7 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length]);
 
-
   // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
-  // This is the “detect new source active and press play if already playing” fix.
   useEffect(() => {
     if (!viewerSrc) return;
     const t = playheadRef.current ?? playhead;
@@ -1177,6 +1312,24 @@ export default function GenerateEdit({ user }) {
 
   // -------- Playhead drag (global pointer listeners) --------
   const dragPointerIdRef = useRef(null);
+
+  function onTimelineBackgroundPointerDown(e) {
+    if (isDraggingClipRef.current) return;
+    if (isTrimmingRef.current) return;
+    if (isDraggingPlayheadRef.current) return;
+
+    // If you clicked *on* something interactive, do nothing.
+    if (e.target?.closest?.(".genEditClip")) return;
+    if (e.target?.closest?.(".genEditTrimHandle")) return;
+    if (e.target?.closest?.(".genEditClipX")) return;
+    if (e.target?.closest?.(".genEditPlayheadHandle")) return;
+    if (e.target?.closest?.(".genEditTimeHeader")) return;
+    if (e.target?.closest?.(".genEditTimeHeaderHit")) return;
+
+    // Otherwise, you clicked "empty timeline" -> clear selection.
+    if (e.shiftKey) return;
+    clearSelection();
+  }
 
   function onPlayheadPointerDown(e) {
     e.preventDefault();
@@ -1226,15 +1379,14 @@ export default function GenerateEdit({ user }) {
     window.addEventListener("pointercancel", onUp);
   }
 
-  function onTimelinePointerDown(e) {
+  // ✅ Only the time header row updates playhead on click
+  function onTimeHeaderPointerDown(e) {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
-
-    const targetEl = e.target;
-    if (targetEl?.closest?.(".genEditClip")) return;
-    if (targetEl?.closest?.(".genEditPlayheadHandle")) return;
+    if (e.target?.closest?.(".genEditPlayheadHandle")) return;
 
     const t = getTimeFromClientX(e.clientX);
+
     isScrubbingRef.current = true;
     setPlayhead(t);
     playheadRef.current = t;
@@ -1242,7 +1394,7 @@ export default function GenerateEdit({ user }) {
     ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
       isScrubbingRef.current = false;
       if (wantedPlayRef.current) {
-        ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timelineClick"));
+        ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
       }
     });
   }
@@ -1280,26 +1432,118 @@ export default function GenerateEdit({ user }) {
     }
   }
 
-  useEffect(() => {
+  // Ctrl/Cmd + S = Save
+useEffect(() => {
   const onKeyDown = (e) => {
-    // Don’t steal keys while typing
-    const tag = (e.target?.tagName || "").toLowerCase();
-    const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
-    if (isTyping) return;
+    const key = (e.key || "").toLowerCase();
 
-    // Delete / Backspace removes selected clip
-    if ((e.key === "Delete" || e.key === "Backspace") && activeClipKey) {
+    // Ctrl+S (Windows/Linux) or Cmd+S (Mac)
+    if ((e.ctrlKey || e.metaKey) && key === "s") {
       e.preventDefault();
-      removeFromTimeline(activeClipKey);
-      return;
+
+      // Optional: don’t save if you're typing in an input/textarea
+      const tag = (e.target?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      if (isTyping) return;
+
+      // Avoid spam / no-op
+      if (isSaving) return;
+      if (!dirty) return;
+
+      saveProjectNow();
     }
   };
 
   window.addEventListener("keydown", onKeyDown);
   return () => window.removeEventListener("keydown", onKeyDown);
-}, [activeClipKey]); // eslint-disable-line react-hooks/exhaustive-deps
+}, [dirty, isSaving, saveProjectNow]);
 
-  // -------- Clip drag (shift snap) --------
+  // Delete / Backspace removes selected clip
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const tag = (e.target?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      if (isTyping) return;
+
+      if (e.key === "Escape") {
+        clearSelection();
+        return;
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const keys = Array.from(selectedClipKeysRef.current || []);
+        const fallback = activeClipKey ? [activeClipKey] : [];
+        const toRemove = keys.length ? keys : fallback;
+
+        if (toRemove.length) {
+          e.preventDefault();
+          setClips((prev) => prev.filter((c) => !toRemove.includes(c.key)));
+
+          // cleanup selection/active
+          setSelectedClipKeys(new Set());
+          setActiveClipKey(null);
+
+          // if we removed loaded clip, re-align viewer
+          if (toRemove.includes(loadedClipKeyRef.current)) {
+            loadedClipKeyRef.current = null;
+            loadedSrcRef.current = "";
+            ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: wantedPlayRef.current }).finally(() => {
+              if (wantedPlayRef.current) forceResume("removeClip");
+            });
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClipKey]);
+
+  // -------- Clip drag (shift snap) / Razor split --------
+  function splitClipAtTime(clipKey, timelineT) {
+    setClips((prev) => {
+      const clip = prev.find((c) => c.key === clipKey);
+      if (!clip) return prev;
+
+      const start = Number(clip.start) || 0;
+      const in0 = Number(clip.in) || 0;
+      const out0 = Number(clip.out) || 0;
+
+      const len = Math.max(0, out0 - in0);
+      if (len <= MIN_LEN * 2) return prev;
+
+      // timelineT must be inside clip bounds
+      const local = clamp((Number(timelineT) || 0) - start, 0, len);
+      if (local <= MIN_LEN || local >= len - MIN_LEN) return prev;
+
+      const splitVideoTime = in0 + local;
+
+      const left = {
+        ...clip,
+        key: `${clip.key}-L-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        out: splitVideoTime,
+      };
+
+      const right = {
+        ...clip,
+        key: `${clip.key}-R-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        start: start + local,
+        in: splitVideoTime,
+        // out stays out0
+      };
+
+      const next = [];
+      for (const c of prev) {
+        if (c.key === clipKey) next.push(left, right);
+        else next.push(c);
+      }
+
+      setActiveClipKey(right.key);
+      return next;
+    });
+  }
+
   function onClipPointerDown(e, clipKey) {
     if (isTrimmingRef.current) return;
 
@@ -1331,11 +1575,36 @@ export default function GenerateEdit({ user }) {
     dragOrigTrackRef.current = { kind: clip.kind, track: Number(clip.track) || 0 };
     didMoveClipRef.current = false;
 
+    // Build drag group:
+    // If the clicked clip is in the selection, drag the whole selection.
+    // Otherwise drag just this clip.
+    // Also: only drag clips of the same "kind" (video vs audio) as the primary.
+    const sel = selectedClipKeysRef.current;
+    const primary = clips.find((c) => c.key === clipKey);
+    const groupKeys = sel && sel.has(clipKey) ? Array.from(sel) : [clipKey];
+    const group = clips
+      .filter((c) => groupKeys.includes(c.key))
+      .filter((c) => c.kind === primary.kind)
+      .map((c) => ({ key: c.key, start: Number(c.start) || 0, kind: c.kind, track: Number(c.track) || 0 }));
+
+    dragGroupRef.current = group;
+    dragGroupPrimaryKeyRef.current = clipKey;
+    dragGroupPrimaryStartRef.current = Number(primary.start) || 0;
+
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
 
-    setActiveClipKey(clipKey);
+    // Selection behavior:
+    // - Shift: toggle selection membership
+    // - No shift: if clip isn't already selected, make it the sole selection
+    if (e.shiftKey) {
+      toggleSelectionKey(clipKey);
+    } else {
+      const sel = selectedClipKeysRef.current;
+      if (!sel || !sel.has(clipKey)) setSingleSelection(clipKey);
+      else setActiveClipKey(clipKey);
+}
   }
 
   function onClipPointerMove(e) {
@@ -1351,12 +1620,24 @@ export default function GenerateEdit({ user }) {
     if (!didMoveClipRef.current && Math.abs(dxPx) < 3 && Math.abs(dyPx) < 3) return;
     didMoveClipRef.current = true;
 
+    const group = dragGroupRef.current || [];
+    const primaryKey = dragGroupPrimaryKeyRef.current || key;
+
+    const primaryOrig = group.find((g) => g.key === primaryKey) || { start: dragClipStartRef.current, kind: null, track: null };
     const dxSeconds = dxPx / PPS;
-    let nextStart = Math.max(0, dragClipStartRef.current + dxSeconds);
 
-    if (e.shiftKey) nextStart = Math.max(0, snapSeconds(nextStart, 1));
-    nextStart = snapToEdges(nextStart, key);
+    // compute proposed new start for PRIMARY, then derive delta
+    let nextPrimaryStart = Math.max(0, Number(primaryOrig.start || 0) + dxSeconds);
 
+    // time snap: shift => whole seconds
+    if (e.shiftKey) nextPrimaryStart = Math.max(0, snapSeconds(nextPrimaryStart, 1));
+
+    // edge snap (apply using the primary clip key)
+    nextPrimaryStart = snapToEdges(nextPrimaryStart, primaryKey);
+
+    const delta = nextPrimaryStart - (Number(primaryOrig.start) || 0);
+
+    // lane change (apply to entire group, Premiere-ish)
     const orig = dragOrigTrackRef.current;
     let nextKind = orig?.kind;
     let nextTrack = orig?.track;
@@ -1368,10 +1649,22 @@ export default function GenerateEdit({ user }) {
       if (nextKind === "video") nextTrack = 0;
     }
 
+    // Apply delta to every clip in group
+    const groupKeySet = new Set(group.map((g) => g.key));
+
     setClips((prev) =>
       prev.map((c) => {
-        if (c.key !== key) return c;
-        return { ...c, start: nextStart, kind: nextKind, track: nextTrack };
+        if (!groupKeySet.has(c.key)) return c;
+
+        const g = group.find((x) => x.key === c.key);
+        const baseStart = Number(g?.start ?? c.start ?? 0);
+
+        // keep group from going negative: clamp each individually
+        const movedStart = Math.max(0, baseStart + delta);
+
+        // apply lane change only if same kind as original dragged kind
+        // (we already filtered group to same kind as primary, so this is safe)
+        return { ...c, start: movedStart, kind: nextKind, track: nextTrack };
       })
     );
   }
@@ -1385,6 +1678,9 @@ export default function GenerateEdit({ user }) {
     dragStartClientXRef.current = 0;
     dragStartClientYRef.current = 0;
     dragOrigTrackRef.current = null;
+    dragGroupRef.current = [];
+    dragGroupPrimaryKeyRef.current = null;
+    dragGroupPrimaryStartRef.current = 0;
 
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -1563,6 +1859,8 @@ export default function GenerateEdit({ user }) {
     if (v) v.muted = next;
   }
 
+
+
   function setPlayerVolume(next) {
     const x = clamp(Number(next), 0, 1);
     setVolume(x);
@@ -1582,26 +1880,25 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerSrc]);
 
+  // Keep playhead positioned when zoom changes
   useEffect(() => {
-  const viewport = timelineViewportRef.current;
-  if (!viewport) return;
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
 
-  const t = playheadRef.current ?? playhead;
-  const prev = prevPpsRef.current || pps;
+    const t = playheadRef.current ?? playhead;
+    const prev = prevPpsRef.current || pps;
 
-  // Keep the playhead positioned consistently by adjusting scrollLeft by delta pixels
-  const oldX = t * prev;
-  const newX = t * pps;
-  viewport.scrollLeft = Math.max(0, viewport.scrollLeft + (newX - oldX));
+    const oldX = t * prev;
+    const newX = t * pps;
+    viewport.scrollLeft = Math.max(0, viewport.scrollLeft + (newX - oldX));
 
-  prevPpsRef.current = pps;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [pps]);
+    prevPpsRef.current = pps;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pps]);
 
-
+  // Tool hotkeys
   useEffect(() => {
     const onKeyDown = (e) => {
-      // Don’t steal keys while typing
       const tag = (e.target?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
@@ -1613,39 +1910,40 @@ export default function GenerateEdit({ user }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // Fill libDurMap for missing durations
   useEffect(() => {
-  if (!libraryVideos?.length) return;
+    if (!libraryVideos?.length) return;
 
-  let cancelled = false;
+    let cancelled = false;
 
-  (async () => {
-    for (const v of libraryVideos) {
-      if (cancelled) return;
+    (async () => {
+      for (const v of libraryVideos) {
+        if (cancelled) return;
 
-      const id = String(v?.id ?? "");
-      if (!id) continue;
+        const id = String(v?.id ?? "");
+        if (!id) continue;
 
-      const provided = Number(v.durationSeconds);
-      if (Number.isFinite(provided) && provided > 0.01) continue;
+        const provided = Number(v.durationSeconds);
+        if (Number.isFinite(provided) && provided > 0.01) continue;
 
-      if (libDurMap.has(id)) continue;
+        if (libDurMap.has(id)) continue;
 
-      const d = await getVideoDurationSeconds(v);
-      if (cancelled) return;
+        const d = await getVideoDurationSeconds(v);
+        if (cancelled) return;
 
-      setLibDurMap((prev) => {
-        const next = new Map(prev);
-        next.set(id, d);
-        return next;
-      });
-    }
-  })();
+        setLibDurMap((prev) => {
+          const next = new Map(prev);
+          next.set(id, d);
+          return next;
+        });
+      }
+    })();
 
-  return () => {
-    cancelled = true;
-  };
-// eslint-disable-next-line react-hooks/exhaustive-deps
-}, [libraryVideos]);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryVideos]);
 
   // ✅ Button icon derived from actual state
   const playPauseIcon = useMemo(() => {
@@ -1698,17 +1996,18 @@ export default function GenerateEdit({ user }) {
                   const isActive = selectedVideo?.id === v.id;
                   const src = thumbUrl(v);
                   const id = String(v.id);
-                    const provided = Number(v.durationSeconds);
-                    const fallback = libDurMap.get(id);
 
-                    const dur =
-                      Number.isFinite(provided) && provided > 0.01
-                        ? provided
-                        : Number.isFinite(fallback) && fallback > 0.01
-                        ? fallback
-                        : null;
+                  const provided = Number(v.durationSeconds);
+                  const fallback = libDurMap.get(id);
 
-                    const durLabel = dur != null ? fmtTime(dur) : "…";
+                  const dur =
+                    Number.isFinite(provided) && provided > 0.01
+                      ? provided
+                      : Number.isFinite(fallback) && fallback > 0.01
+                      ? fallback
+                      : null;
+
+                  const durLabel = dur != null ? fmtTime(dur) : "…";
 
                   return (
                     <div
@@ -1736,9 +2035,7 @@ export default function GenerateEdit({ user }) {
                       </div>
 
                       <div className="genEditLibActions">
-                        <div className="muted" style={{ fontSize: 11, fontWeight: 800 }}>
-                          
-                        </div>
+                        <div className="muted" style={{ fontSize: 11, fontWeight: 800 }} />
                       </div>
                     </div>
                   );
@@ -1884,27 +2181,16 @@ export default function GenerateEdit({ user }) {
           {/* Zoom control */}
           <div className="genEditZoomRow" role="group" aria-label="Timeline zoom">
             <div className="genEditToolGroup" role="group" aria-label="Edit tools">
-              <button
-                type="button"
-                className={`genEditToolBtn ${tool === "select" ? "active" : ""}`}
-                onClick={() => setTool("select")}
-                title="Select (V)"
-              >
+              <button type="button" className={`genEditToolBtn ${tool === "select" ? "active" : ""}`} onClick={() => setTool("select")} title="Select (V)">
                 🖱
               </button>
 
-              <button
-                type="button"
-                className={`genEditToolBtn ${tool === "razor" ? "active" : ""}`}
-                onClick={() => setTool("razor")}
-                title="Razor (C)"
-              >
+              <button type="button" className={`genEditToolBtn ${tool === "razor" ? "active" : ""}`} onClick={() => setTool("razor")} title="Razor (C)">
                 ✂
               </button>
             </div>
             <div className="genEditZoomLabel">
-              <span className="muted">Zoom</span>{" "}
-              <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
+              <span className="muted">Zoom</span> <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
             </div>
 
             <input
@@ -1919,10 +2205,10 @@ export default function GenerateEdit({ user }) {
                 "--zoom-track-bg": `linear-gradient(
                   90deg,
                   rgba(140,90,255,1) 0%,
-                  rgba(140,90,255,1) ${(pps - 2) / (80 - 2) * 100}%,
-                  rgba(255,255,255,0.25) ${(pps - 2) / (80 - 2) * 100}%,
+                  rgba(140,90,255,1) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
+                  rgba(255,255,255,0.25) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
                   rgba(255,255,255,0.25) 100%
-                )`
+                )`,
               }}
             />
 
@@ -1947,34 +2233,49 @@ export default function GenerateEdit({ user }) {
               {/* Scrollable time area */}
               <div className="genEditTimelineViewport" ref={timelineViewportRef}>
                 <div className="genEditTimelineScroll" ref={timelineScrollRef}>
-                  {/* Ruler */}
-                  <div className="genEditTimelineRuler" style={{ width: timelineWidth }} aria-hidden="true">
-                    {rulerTicks.map(({ t, major }) => {
-                      const x = t * PPS;
-                      return (
-                        <div key={t} className={`genEditRulerTick ${major ? "major" : ""}`} style={{ left: `${x}px` }}>
-                          {major ? <div className="genEditRulerLabel">{fmtRulerLabel(t)}</div> : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Time origin surface */}
+                  {/* ✅ Time stack: header (timecode row) + lanes share same coordinate space */}
                   <div
                     ref={timelineOriginRef}
-                    className="genEditTimeOrigin"
+                    className="genEditTimeStack"
                     style={{ width: timelineWidth }}
-                    onPointerDown={onTimelinePointerDown}
                     onPointerMove={onTimelinePointerMove}
                     onPointerLeave={onTimelinePointerLeave}
                     onDragOver={onTimelineDragOver}
                     onDrop={onTimelineDrop}
                     role="presentation"
                   >
-                    {tool === "razor" && razorHoverT != null && (
-                      <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} />
+                    {/* ✅ Header row: ONLY place where click-to-set playhead works */}
+                    <div className="genEditTimeHeader">
+                      <div className="genEditTimelineRuler" aria-hidden="true">
+                        {rulerTicks.map(({ t, major }) => {
+                          const x = t * PPS;
+                          return (
+                            <div key={t} className={`genEditRulerTick ${major ? "major" : ""}`} style={{ left: `${x}px` }}>
+                              {major ? <div className="genEditRulerLabel">{fmtRulerLabel(t)}</div> : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="genEditTimeHeaderHit" onPointerDown={onTimeHeaderPointerDown} />
+                    </div>
+
+                    {/* Razor preview line spans whole stack */}
+                    {tool === "razor" && razorHoverT != null && <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} />}
+                    
+                    {boxSel && (
+                      <div
+                        className="genEditBoxSelect"
+                        style={{
+                          left: `${boxSel.left}px`,
+                          top: `${boxSel.top}px`,
+                          width: `${boxSel.width}px`,
+                          height: `${boxSel.height}px`,
+                        }}
+                      />
                     )}
-                    {/* Playhead */}
+
+                    {/* Playhead spans whole stack; handle is visually in the header */}
                     <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
                     <div
                       className="genEditPlayheadHandle"
@@ -1988,78 +2289,99 @@ export default function GenerateEdit({ user }) {
                       tabIndex={0}
                     />
 
-                    <div className="genEditLanes">
-                      {LANES.map((lane) => {
-                        const laneClips = clipsForLane(lane.kind, lane.track);
+                    {/* Lanes (no click-to-set playhead here anymore) */}
+                    <div className="genEditTimeOrigin" onPointerDown={onLanesPointerDown}>
+                      <div className="genEditLanes">
+                        {LANES.map((lane) => {
+                          const laneClips = clipsForLane(lane.kind, lane.track);
 
-                        return (
-                          <div key={`${lane.kind}-${lane.track}`} className={`genEditLane ${lane.kind}`} data-lane-kind={lane.kind} data-lane-track={lane.track}>
-                            <div className="genEditLaneContent">
-                              {laneClips.map((c) => {
-                                const left = (Number(c.start) || 0) * PPS;
-                                const MIN_PX = Math.max(6, MIN_LEN * PPS); // MIN_LEN=0.25, PPS=40 => 10px
-                                const width = Math.max(MIN_PX, clipLen(c) * PPS);
-                                const isActive = c.key === activeClipKey;
+                          return (
+                            <div
+                              key={`${lane.kind}-${lane.track}`}
+                              className={`genEditLane ${lane.kind}`}
+                              data-lane-kind={lane.kind}
+                              data-lane-track={lane.track}
+                            >
+                              <div className="genEditLaneContent">
+                                {laneClips.map((c) => {
+                                  const left = (Number(c.start) || 0) * PPS;
+                                  const MIN_PX = Math.max(6, MIN_LEN * PPS);
+                                  const width = Math.max(MIN_PX, clipLen(c) * PPS);
+                                  const isSelected = selectedClipKeys.has(c.key);
+                                  const isBoxHot = boxHoverKeys.has(c.key);
 
-                                return (
-                                  <div
-                                    key={c.key}
-                                    className={`genEditClip ${isActive ? "active" : ""} ${c.kind}`}
-                                    style={{ left: `${left}px`, width: `${width}px` }}
-                                    onPointerDown={(e) => onClipPointerDown(e, c.key)}
-                                    onPointerMove={onClipPointerMove}
-                                    onPointerUp={onClipPointerUp}
-                                    onPointerCancel={onClipPointerUp}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onClick={() => setActiveClipKey(c.key)}
-                                    role="button"
-                                    tabIndex={0}
-                                  >
+                                  return (
+                                    
                                     <div
-                                      className="genEditTrimHandle left"
-                                      onPointerDown={(e) => onTrimPointerDown(e, c.key, "l")}
-                                      onPointerMove={onTrimPointerMove}
-                                      onPointerUp={onTrimPointerUp}
-                                      onPointerCancel={onTrimPointerUp}
-                                    />
-                                    <div
-                                      className="genEditTrimHandle right"
-                                      onPointerDown={(e) => onTrimPointerDown(e, c.key, "r")}
-                                      onPointerMove={onTrimPointerMove}
-                                      onPointerUp={onTrimPointerUp}
-                                      onPointerCancel={onTrimPointerUp}
-                                    />
-
-                                    <div className="genEditClipTop">
-                                      <div className="genEditClipTitle" title={c?.video?.title || ""}>
-                                        {c?.video?.title || (c.kind === "audio" ? "Audio clip" : "Untitled clip")}
-                                      </div>
-
-                                      <button
-                                        type="button"
-                                        className="genEditClipX"
+                                        key={c.key}
+                                        className={[
+                                          "genEditClip",
+                                          c.kind,
+                                          isSelected ? "selected active" : "",
+                                          isBoxHot ? "boxHot" : "",
+                                        ].join(" ")}
+                                        data-clip-key={c.key}
+                                        style={{ left: `${left}px`, width: `${width}px` }}
+                                        onPointerDown={(e) => onClipPointerDown(e, c.key)}
+                                        onPointerMove={onClipPointerMove}
+                                        onPointerUp={onClipPointerUp}
+                                        onPointerCancel={onClipPointerUp}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        // ✅ No onClick selection — pointerdown already handles select + shift-multiselect
                                         onClick={(e) => {
-                                          e.preventDefault();
+                                          // Optional: prevent bubbling to any future background click handlers
                                           e.stopPropagation();
-                                          removeFromTimeline(c.key);
                                         }}
-                                        aria-label="Remove clip"
-                                        title="Remove clip"
+                                        role="button"
+                                        tabIndex={0}
                                       >
-                                        ✕
-                                      </button>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
+                                      <div
+                                        className="genEditTrimHandle left"
+                                        onPointerDown={(e) => onTrimPointerDown(e, c.key, "l")}
+                                        onPointerMove={onTrimPointerMove}
+                                        onPointerUp={onTrimPointerUp}
+                                        onPointerCancel={onTrimPointerUp}
+                                      />
+                                      <div
+                                        className="genEditTrimHandle right"
+                                        onPointerDown={(e) => onTrimPointerDown(e, c.key, "r")}
+                                        onPointerMove={onTrimPointerMove}
+                                        onPointerUp={onTrimPointerUp}
+                                        onPointerCancel={onTrimPointerUp}
+                                      />
 
-                      {!clips.length && <div className="genEditTimelineEmpty">Drag clips from your library onto the timeline.</div>}
+                                      <div className="genEditClipTop">
+                                        <div className="genEditClipTitle" title={c?.video?.title || ""}>
+                                          {c?.video?.title || (c.kind === "audio" ? "Audio clip" : "Untitled clip")}
+                                        </div>
+
+                                        <button
+                                          type="button"
+                                          className="genEditClipX"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            removeFromTimeline(c.key);
+                                          }}
+                                          aria-label="Remove clip"
+                                          title="Remove clip"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {!clips.length && <div className="genEditTimelineEmpty">Drag clips from your library onto the timeline.</div>}
+                      </div>
                     </div>
                   </div>
+                  {/* /time stack */}
                 </div>
               </div>
             </div>
