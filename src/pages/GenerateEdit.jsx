@@ -161,6 +161,9 @@ export default function GenerateEdit({ user }) {
   const playheadRef = useRef(0);
   const isAdvancingRef = useRef(false);
 
+  const isSwappingSrcRef = useRef(false);
+  const lastProgressTimeRef = useRef({ t: 0, at: performance.now() });
+
   // What is currently loaded in the <video> (avoid accidental src churn)
   const loadedClipKeyRef = useRef(null);
   const loadedSrcRef = useRef("");
@@ -637,44 +640,48 @@ export default function GenerateEdit({ user }) {
     const needsSrcChange = loadedClipKeyRef.current !== clip.key || loadedSrcRef.current !== src;
 
     if (needsSrcChange) {
-      // Pause before swapping src to avoid weird buffered state
+      isSwappingSrcRef.current = true;
       try {
-        v.pause();
-      } catch {}
-
-      loadedClipKeyRef.current = clip.key;
-      loadedSrcRef.current = src;
-
-      // NOTE: React also renders src={viewerSrc}. Keeping this in sync reduces churn/races.
-      if ((v.getAttribute("src") || "") !== src) {
-        v.setAttribute("src", src);
-      }
-
-      try {
-        v.load();
-      } catch {}
-
-      try {
-        if (v.readyState < 1) {
-          await waitForEvent(v, "loadedmetadata", 8000);
-        }
-      } catch {}
-
-      if (loadTokenRef.current !== token) return;
-
-      applyMuteVol();
-
-      try {
-        v.currentTime = targetVideoTime;
-      } catch {}
-
-      if (v.readyState < 2) {
+        // Pause before swapping src to avoid weird buffered state
         try {
-          await waitForEvent(v, "canplay", 5000);
+          v.pause();
         } catch {}
-      }
 
-      if (loadTokenRef.current !== token) return;
+        loadedClipKeyRef.current = clip.key;
+        loadedSrcRef.current = src;
+
+        if ((v.getAttribute("src") || "") !== src) {
+          v.setAttribute("src", src);
+        }
+
+        try {
+          v.load();
+        } catch {}
+
+        try {
+          if (v.readyState < 1) {
+            await waitForEvent(v, "loadedmetadata", 8000);
+          }
+        } catch {}
+
+        if (loadTokenRef.current !== token) return;
+
+        applyMuteVol();
+
+        try {
+          v.currentTime = targetVideoTime;
+        } catch {}
+
+        if (v.readyState < 2) {
+          try {
+            await waitForEvent(v, "canplay", 5000);
+          } catch {}
+        }
+
+        if (loadTokenRef.current !== token) return;
+      } finally {
+        isSwappingSrcRef.current = false;
+      }
     } else {
       applyMuteVol();
       const cur = Number(v.currentTime || 0);
@@ -725,6 +732,44 @@ export default function GenerateEdit({ user }) {
     };
 
     attempt(10);
+  }
+
+  function ensureProgressKick(label = "") {
+    const v = videoRef.current;
+    if (!v) return;
+    if (!wantedPlayRef.current) return;
+
+    const start = { ...lastProgressTimeRef.current };
+
+    window.setTimeout(() => {
+      const vv = videoRef.current;
+      if (!vv) return;
+      if (!wantedPlayRef.current) return;
+      if (isSwappingSrcRef.current) return;
+
+      const now = performance.now();
+      const curT = Number(vv.currentTime || 0);
+
+      // If time advanced, we're good.
+      if (curT > start.t + 0.02) return;
+
+      // If we've recently had a timeupdate, also fine.
+      if (now - start.at < 300) return;
+
+      // Otherwise: we're "playing" but stuck -> kick it
+      forceResume(`progressKick:${label}`);
+
+      // Hard-kick fallback: reload+seek+play if still stuck after a short delay
+      window.setTimeout(() => {
+        const v2 = videoRef.current;
+        if (!v2) return;
+        if (!wantedPlayRef.current) return;
+        if (!v2.paused && !v2.ended) return;
+
+        const t = playheadRef.current ?? playhead;
+        ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("hardKick"));
+      }, 250);
+    }, 550);
   }
 
   // Transport: Play/Pause
@@ -867,6 +912,7 @@ export default function GenerateEdit({ user }) {
 
     await ensureLoadedForTimelineTime(nextStart, { autoplay: true });
     forceResume("advanceToNextClip");
+    ensureProgressKick("advanceToNextClip");
 
     isAdvancingRef.current = false;
   }
@@ -892,6 +938,19 @@ export default function GenerateEdit({ user }) {
     };
   }, []);
 
+    // Track real playback progress so we can detect stalls
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const onTimeUpdate = () => {
+      lastProgressTimeRef.current = { t: Number(v.currentTime || 0), at: performance.now() };
+    };
+
+    v.addEventListener("timeupdate", onTimeUpdate);
+    return () => v.removeEventListener("timeupdate", onTimeUpdate);
+  }, []);
+
   // ✅ Pause catcher & resume-on-ready glue (with true end detection)
   useEffect(() => {
     const v = videoRef.current;
@@ -899,6 +958,7 @@ export default function GenerateEdit({ user }) {
 
     const onPause = () => {
       if (!wantedPlayRef.current) return;
+      if (isSwappingSrcRef.current) return;
 
       // If we're actually at the end, stop intent. Otherwise, resume.
       const t = playheadRef.current ?? playhead;
@@ -935,14 +995,14 @@ export default function GenerateEdit({ user }) {
       v.removeEventListener("loadedmetadata", onLoadedMeta);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timelineEnd, clipsSorted.length, playhead]);
+  }, [timelineEnd, clipsSorted.length]);
 
   // Master clock: timeupdate drives playhead; and advances at out point
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
 
-    const EPS_OUT = 0.06;
+    const EPS_OUT = 0.15;
 
     const onTick = () => {
       if (isScrubbingRef.current) return;
@@ -968,10 +1028,13 @@ export default function GenerateEdit({ user }) {
       playheadRef.current = newPlayhead;
 
       // ✅ Only advance when the underlying video time reaches OUT (not when “no next start exists”)
-      if ((v.currentTime || 0) >= clipOut - EPS_OUT) {
+      const ct = Number(v.currentTime || 0);
+      if (ct >= (clipOut - EPS_OUT)) {
         if (!isAdvancingRef.current) advanceToNextClip();
       }
     };
+
+  
 
     v.addEventListener("timeupdate", onTick);
     return () => v.removeEventListener("timeupdate", onTick);
@@ -992,6 +1055,28 @@ export default function GenerateEdit({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length]);
 
+  useEffect(() => {
+  const v = videoRef.current;
+  if (!v) return;
+
+  const onEnded = () => {
+    // If user intended playback, advance to next clip
+    if (!wantedPlayRef.current) return;
+    // If we're truly at end of timeline, stop
+    const t = playheadRef.current ?? playhead;
+    if (atTimelineEnd(t)) {
+      wantedPlayRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+    advanceToNextClip();
+  };
+
+  v.addEventListener("ended", onEnded);
+  return () => v.removeEventListener("ended", onEnded);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [timelineEnd, clipsSorted.length]);
+
   // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
   // This is the “detect new source active and press play if already playing” fix.
   useEffect(() => {
@@ -999,6 +1084,7 @@ export default function GenerateEdit({ user }) {
     const t = playheadRef.current ?? playhead;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
       if (wantedPlayRef.current) forceResume("viewerSrcChanged");
+      ensureProgressKick("viewerSrcChanged");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerSrc]);

@@ -51,7 +51,7 @@ export default function AppLayout({
               }
             }}
           >
-            Create
+            Upload
           </NavLink>
 
           <NavLink
