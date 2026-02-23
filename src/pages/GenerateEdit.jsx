@@ -118,6 +118,10 @@ export default function GenerateEdit({ user }) {
   const [activeClipKey, setActiveClipKey] = useState(null);
   const [selectedClipKeys, setSelectedClipKeys] = useState(() => new Set());
   const selectedClipKeysRef = useRef(new Set());
+  
+
+
+
   useEffect(() => {
     selectedClipKeysRef.current = selectedClipKeys;
   }, [selectedClipKeys]);
@@ -250,6 +254,94 @@ export default function GenerateEdit({ user }) {
   const undoStackRef = useRef([]); // [{ sequenceTitle, clips, playhead, audioLaneCount }]
   const redoStackRef = useRef([]);
 
+  // -------- Copy / Paste clipboard --------
+// Stores a snapshot of selected clips with starts relative to the earliest start
+const clipClipboardRef = useRef(null);
+
+function newClipKeyLike(oldKey) {
+  return `${oldKey}-P-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getSelectedOrActiveKeys() {
+  const sel = Array.from(selectedClipKeysRef.current || []);
+  if (sel.length) return sel;
+  return activeClipKey ? [activeClipKey] : [];
+}
+
+function copySelectedClips() {
+  const keys = getSelectedOrActiveKeys();
+  if (!keys.length) return;
+
+  const picked = clips
+    .filter((c) => c && keys.includes(c.key))
+    .map((c) => ({
+      // store everything we need to recreate the clip
+      kind: c.kind,
+      track: Number(c.track) || 0,
+      start: Number(c.start) || 0,
+      in: Number(c.in) || 0,
+      out: Number(c.out) || 0,
+      sourceDuration: Number(c.sourceDuration) || Number(c?.video?.durationSeconds) || 0,
+      video: c.video || null,
+      videoId: c?.video?.id ?? null,
+      _origKey: c.key,
+    }));
+
+  if (!picked.length) return;
+
+  const minStart = Math.min(...picked.map((c) => c.start));
+  const normalized = picked
+    .map((c) => ({ ...c, relStart: c.start - minStart }))
+    .sort((a, b) => a.relStart - b.relStart);
+
+  clipClipboardRef.current = {
+    copiedAt: Date.now(),
+    count: normalized.length,
+    minStart,
+    items: normalized,
+  };
+}
+
+function pasteClipboardAtPlayhead() {
+  const clipb = clipClipboardRef.current;
+  if (!clipb?.items?.length) return;
+
+  pushUndo("paste");
+
+  const baseT = Math.max(0, Number(playheadRef.current ?? playhead) || 0);
+
+  // Build new clips with new keys
+  const newClips = clipb.items.map((it) => {
+    // Rebind video object from library if available (prevents stale objects)
+    let videoObj = it.video;
+    if (it.videoId != null && Array.isArray(libraryVideos) && libraryVideos.length) {
+      const fresh = libraryVideos.find((v) => String(v.id) === String(it.videoId));
+      if (fresh) videoObj = fresh;
+    }
+
+    const kind = it.kind === "video" ? "video" : it.kind === "audio" ? "audio" : "video";
+    const track = kind === "video" ? 0 : Number(it.track) || 0;
+
+    return {
+      key: newClipKeyLike(it._origKey || `${kind}-${it.videoId || "x"}`),
+      kind,
+      track,
+      video: videoObj,
+      start: Math.max(0, baseT + (Number(it.relStart) || 0)),
+      sourceDuration: Number(it.sourceDuration) || Number(videoObj?.durationSeconds) || 0,
+      in: Number(it.in) || 0,
+      out: Number(it.out) || 0,
+    };
+  });
+
+  setClips((prev) => [...prev, ...newClips]);
+
+  // select pasted clips
+  const pastedKeys = new Set(newClips.map((c) => c.key));
+  setSelectedClipKeys(pastedKeys);
+  setActiveClipKey(newClips[newClips.length - 1]?.key || null);
+}
+
   function getSnapshot() {
     return {
       sequenceTitle: String(sequenceTitle || "Timeline"),
@@ -258,6 +350,37 @@ export default function GenerateEdit({ user }) {
       audioLaneCount: clamp(Number(audioLaneCount) || 1, 1, 5),
     };
   }
+
+  useEffect(() => {
+  const onKeyDown = (e) => {
+    const key = (e.key || "").toLowerCase();
+    const tag = (e.target?.tagName || "").toLowerCase();
+    const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+    if (isTyping) return;
+
+    const mod = e.ctrlKey || e.metaKey;
+        // Copy: Ctrl/Cmd+C
+    if (mod && key === "c" && !e.shiftKey) {
+      e.preventDefault();
+      copySelectedClips();
+      return;
+    }
+
+    // Paste: Ctrl/Cmd+V
+    if (mod && key === "v" && !e.shiftKey) {
+      // IMPORTANT: don't steal your tool hotkey 'v' when not holding Ctrl/Cmd
+      e.preventDefault();
+      pasteClipboardAtPlayhead();
+      return;
+    }
+
+    // Undo...
+    // Redo...
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  return () => window.removeEventListener("keydown", onKeyDown);
+}, [sequenceTitle, clips, playhead, audioLaneCount]);
 
   function applySnapshot(snap) {
     if (!snap) return;
@@ -2203,122 +2326,382 @@ export default function GenerateEdit({ user }) {
     } catch {}
   }
 
-  // -------- Trim / Ripple trim (same handlers; behavior branches on tool) --------
-  function onTrimPointerDown(e, clipKey, side) {
-    pushUndo(`trim ${side}`);
-    e.preventDefault();
-    e.stopPropagation();
+  // -------- Trim / Ripple trim / Roll (shared handles) --------
+function onTrimPointerDown(e, clipKey, side) {
+  pushUndo(`trim ${side}`);
+  e.preventDefault();
+  e.stopPropagation();
 
-    const clip = clips.find((c) => c.key === clipKey);
-    if (!clip) return;
+  const clip = clips.find((c) => c.key === clipKey);
+  if (!clip) return;
 
-    isTrimmingRef.current = true;
-    trimSideRef.current = side;
-    trimKeyRef.current = clipKey;
-    trimStartXRef.current = e.clientX;
+  isTrimmingRef.current = true;
+  trimSideRef.current = side;
+  trimKeyRef.current = clipKey;
+  trimStartXRef.current = e.clientX;
 
-    const laneKind = clip.kind;
-    const laneTrack = Number(clip.track) || 0;
-    const laneStarts = new Map();
-    for (const c of clips) {
-      if (!c) continue;
-      if (c.kind !== laneKind) continue;
-      if ((Number(c.track) || 0) !== laneTrack) continue;
-      laneStarts.set(c.key, Number(c.start) || 0);
-    }
+  const laneKind = clip.kind;
+  const laneTrack = Number(clip.track) || 0;
 
-    const start0 = Number(clip.start) || 0;
-    const end0 = start0 + clipLen(clip);
-
-    trimOrigRef.current = {
-      start: start0,
-      in: Number(clip.in) || 0,
-      out: Number(clip.out) || 0,
-      sourceDuration: Number(clip.sourceDuration) || 0,
-      kind: laneKind,
-      track: laneTrack,
-      end: end0,
-      laneStarts,
-    };
-
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
-
-    setActiveClipKey(clipKey);
-
-    // show tooltip immediately
-    setTrimTip({
-      x: e.clientX + 12,
-      y: e.clientY + 12,
-      text: formatTrimTooltip({
-        side,
-        inTime: clip.in,
-        outTime: clip.out,
-        length: clipLen(clip),
-        deltaLength: 0,
-        isRipple: tool === "ripple",
-      }),
-    });
+  // Capture starts for ripple shifting (your existing approach)
+  const laneStarts = new Map();
+  for (const c of clips) {
+    if (!c) continue;
+    if (c.kind !== laneKind) continue;
+    if ((Number(c.track) || 0) !== laneTrack) continue;
+    laneStarts.set(c.key, Number(c.start) || 0);
   }
 
-  function onTrimPointerMove(e) {
-    if (!isTrimmingRef.current) return;
+  const start0 = Number(clip.start) || 0;
+  const end0 = start0 + clipLen(clip);
 
-    const key = trimKeyRef.current;
-    const side = trimSideRef.current;
-    const orig = trimOrigRef.current;
-    if (!key || !side || !orig) return;
+  // If roll tool, we need the neighbor clip at the cut point.
+  // - dragging RIGHT handle of left clip => neighbor is clip whose start == end0
+  // - dragging LEFT handle of right clip => neighbor is clip whose end == start0
+  let roll = null;
+  if (tool === "roll") {
+    if (side === "r") {
+      const rightNeighbor = findAdjacentOnLane(clips, {
+        kind: laneKind,
+        track: laneTrack,
+        atTime: end0,
+        direction: "right",
+        excludeKeys: [clipKey],
+      });
+      if (rightNeighbor) {
+        const left0 = clip;           // the one you grabbed
+        const right0 = rightNeighbor; // the neighbor
 
-    const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
-    const isRipple = tool === "ripple";
+        roll = {
+          leftKey: left0.key,
+          rightKey: right0.key,
 
-    setClips((prev) => {
-      const primary = prev.find((c) => c.key === key);
-      if (!primary) return prev;
+          // ✅ frozen baselines (these must NOT come from prev on move)
+          cut0: end0,
+          leftIn0: Number(left0.in) || 0,
+          leftOut0: Number(left0.out) || 0,
 
-      const laneKind = orig.kind;
-      const laneTrack = Number(orig.track) || 0;
+          rightStart0: Number(right0.start) || 0,
+          rightIn0: Number(right0.in) || 0,
+          rightOut0: Number(right0.out) || 0,
+        };
+      }
+    } else {
+      const leftNeighbor = findAdjacentOnLane(clips, {
+        kind: laneKind,
+        track: laneTrack,
+        atTime: start0,
+        direction: "left",
+        excludeKeys: [clipKey],
+      });
+      if (leftNeighbor) {
+        const left0 = leftNeighbor;
+        const right0 = clip;
 
-      const srcDur = Number(primary.sourceDuration || orig.sourceDuration || 0);
-      const start0 = Number(orig.start || 0);
-      const in0 = Number(orig.in || 0);
-      const out0 = Number(orig.out || 0);
+        roll = {
+          leftKey: left0.key,
+          rightKey: right0.key,
 
-      const oldStart = start0;
-      const oldEnd = Number(orig.end || (start0 + (out0 - in0)));
-      const oldLen = Math.max(0, out0 - in0);
+          // ✅ frozen baselines
+          cut0: start0,
+          leftIn0: Number(left0.in) || 0,
+          leftOut0: Number(left0.out) || 0,
 
-      let nextPrimary = primary;
+          rightStart0: Number(right0.start) || 0,
+          rightIn0: Number(right0.in) || 0,
+          rightOut0: Number(right0.out) || 0,
+        };
+      }
+    }
+  }
 
-      // Ripple shifting info
-      let delta = 0;
-      let thresholdT = null;
-      let affect = "none"; // "right" | "left" | "none"
+  trimOrigRef.current = {
+    start: start0,
+    in: Number(clip.in) || 0,
+    out: Number(clip.out) || 0,
+    sourceDuration: Number(clip.sourceDuration) || 0,
+    kind: laneKind,
+    track: laneTrack,
+    end: end0,
+    laneStarts,
+    roll, // { leftKey, rightKey } or null
+  };
 
-      if (side === "r") {
-        // RIGHT trim: changes OUT, which moves the end edge on the timeline
-        let nextOut = out0 + dxSeconds;
-        if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
-        nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur);
+  try {
+    e.currentTarget.setPointerCapture(e.pointerId);
+  } catch {}
 
-        // Snap the MOVING EDGE (right edge on timeline)
+  setActiveClipKey(clipKey);
+
+  setTrimTip({
+    x: e.clientX + 12,
+    y: e.clientY + 12,
+    text: formatTrimTooltip({
+      side,
+      inTime: clip.in,
+      outTime: clip.out,
+      length: clipLen(clip),
+      deltaLength: 0,
+      isRipple: tool === "ripple",
+    }),
+  });
+}
+
+function onTrimPointerMove(e) {
+  if (!isTrimmingRef.current) return;
+
+  const key = trimKeyRef.current;
+  const side = trimSideRef.current;
+  const orig = trimOrigRef.current;
+  if (!key || !side || !orig) return;
+
+  const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
+  const isRipple = tool === "ripple";
+  const isRoll = tool === "roll";
+
+  setClips((prev) => {
+    const primary = prev.find((c) => c.key === key);
+    if (!primary) return prev;
+
+    const laneKind = orig.kind;
+    const laneTrack = Number(orig.track) || 0;
+
+    // ---- ROLL EDIT ----
+    // Move cut between 2 adjacent clips, keeping combined outside edges fixed.
+    if (isRoll && orig.roll) {
+      const left = prev.find((c) => c.key === orig.roll.leftKey);
+      const right = prev.find((c) => c.key === orig.roll.rightKey);
+      if (!left || !right) return prev;
+
+        const r0 = orig.roll;
+        const leftStart0 = Number(left.start) || 0; // left START is fixed in a roll edit
+        const leftIn0 = Number(r0.leftIn0) || 0;
+        const leftOut0 = Number(r0.leftOut0) || 0;
+        const leftSrcDur = Number(left.sourceDuration || left?.video?.durationSeconds || 0);
+
+        const rightStart0 = Number(r0.rightStart0) || 0;
+        const rightIn0 = Number(r0.rightIn0) || 0;
+        const rightOut0 = Number(r0.rightOut0) || 0;
+        const rightSrcDur = Number(right.sourceDuration || right?.video?.durationSeconds || 0);
+
+        const cut0 = Number(r0.cut0) || 0;
+        const rightEnd0 = rightStart0 + Math.max(0, rightOut0 - rightIn0); // frozen outer edge
+
+        let delta = dxSeconds;
+      if (e.shiftKey) {
+        // snap cut movement to whole seconds in timeline space
+        const snappedCut = snapSeconds(cut0 + delta, 1);
+        delta = snappedCut - cut0;
+      }
+
+      // Snap the MOVING CUT to lane edges (excluding these two clips)
+      const laneEdges = getLaneEdgesSeconds(prev, {
+        kind: laneKind,
+        track: laneTrack,
+        excludeKey: null,
+      }).filter((t) => {
+        // Remove the two clip edges so we don't "snap to ourselves"
+        const eps = 1e-6;
+        const leftS = leftStart0;
+        const leftE = cut0;
+        const rightS = rightStart0;
+        const rightE = rightEnd0;
+        return (
+          Math.abs(t - leftS) > eps &&
+          Math.abs(t - leftE) > eps &&
+          Math.abs(t - rightS) > eps &&
+          Math.abs(t - rightE) > eps
+        );
+      });
+
+      const proposedCut = cut0 + delta;
+      const snappedCut = snapToNearest(proposedCut, laneEdges, EDGE_SNAP_SEC);
+      delta = snappedCut - cut0;
+
+      // Constraints:
+      // leftOut = leftOut0 + delta
+      // rightIn = rightIn0 + delta
+      // rightStart = rightStart0 + delta
+      // rightEnd stays fixed because duration shrinks/grows with in shift
+      // Helper: if we don't know srcDur yet, allow extension (Infinity)
+        const safeSrcDur = (d) => (Number.isFinite(d) && d > 0.01 ? d : Infinity);
+
+        // ---- Constraints ----
+        // We’re moving the CUT by delta.
+        // left.out increases by delta (left gets longer if delta > 0)
+        // right.in increases by delta AND right.start increases by delta (right gets shorter if delta > 0)
+        // Outer edges fixed: left.start fixed, right.end fixed.
+
+        const leftSrcLimit = safeSrcDur(leftSrcDur);
+        const rightSrcLimit = safeSrcDur(rightSrcDur);
+
+        // 1) Left clip length >= MIN_LEN
+        // leftLen = (leftOut0 + delta) - leftIn0
+        const leftMinDelta = (leftIn0 + MIN_LEN) - leftOut0;
+
+        // 2) Left out cannot exceed source duration (if known)
+        const leftMaxDelta = leftSrcLimit - leftOut0; // Infinity if unknown => no constraint
+
+        // 3) Right in cannot go below 0
+        const rightMinDelta = 0 - rightIn0;
+
+        // 4) Right clip length >= MIN_LEN
+        // rightLen = rightOut0 - (rightIn0 + delta)
+        const rightMaxDelta = (rightOut0 - MIN_LEN) - rightIn0;
+
+        // 5) Right start cannot go below 0 (timeline constraint)
+        const startMinDelta = -rightStart0;
+
+        // 6) Also keep the cut from going beyond the fixed right end - MIN_LEN (timeline version of #4)
+        const cutMaxDeltaByRightLen = (rightEnd0 - MIN_LEN) - cut0;
+
+        // Optional: if right source duration is known and rightOut0 exceeds it, clamp the effective rightOut limit.
+        // (This avoids weirdness if metadata arrives late and out is past EOF.)
+        const effectiveRightOut0 = Math.min(rightOut0, rightSrcLimit);
+
+        
+
+        // Recompute #4/#6 using the effective out (still works when Infinity)
+        const rightMaxDelta2 = (effectiveRightOut0 - MIN_LEN) - rightIn0;
+        const rightEnd0b = rightStart0 + Math.max(0, effectiveRightOut0 - rightIn0);
+        const cutMaxDeltaByRightLen2 = (rightEnd0b - MIN_LEN) - cut0;
+
+        const minDelta = Math.max(leftMinDelta, rightMinDelta, startMinDelta);
+        const maxDelta = Math.min(leftMaxDelta, rightMaxDelta2, cutMaxDeltaByRightLen2);
+
+        // If constraints invert, just lock movement (prevents NaNs / jitter)
+        if (!(minDelta <= maxDelta)) {
+          delta = 0;
+        } else {
+          delta = clamp(delta, minDelta, maxDelta);
+        }
+
+      const nextLeftOut = leftOut0 + delta;
+      const nextRightIn = rightIn0 + delta;
+      const nextRightStart = rightStart0 + delta;
+
+      // Update tooltip (show left length change)
+      const oldLeftLen = Math.max(0, leftOut0 - leftIn0);
+      const newLeftLen = Math.max(0, nextLeftOut - leftIn0);
+      const deltaLen = newLeftLen - oldLeftLen;
+
+      setTrimTip({
+        x: e.clientX + 12,
+        y: e.clientY + 12,
+        text: `Roll: ${fmtTime(newLeftLen)} (${fmtDelta(deltaLen)})`,
+      });
+
+      return prev.map((c) => {
+        if (c.key === left.key) return { ...c, out: nextLeftOut };
+        if (c.key === right.key) return { ...c, start: nextRightStart, in: nextRightIn };
+        return c;
+      });
+    }
+
+    // ---- TRIM / RIPPLE (your existing logic) ----
+    const srcDur = Number(primary.sourceDuration || orig.sourceDuration || 0);
+    const start0 = Number(orig.start || 0);
+    const in0 = Number(orig.in || 0);
+    const out0 = Number(orig.out || 0);
+
+    const oldStart = start0;
+    const oldEnd = Number(orig.end || (start0 + (out0 - in0)));
+    const oldLen = Math.max(0, out0 - in0);
+
+    let nextPrimary = primary;
+
+    // Ripple shifting info
+    let delta = 0;
+    let thresholdT = null;
+    let affect = "none"; // "right" | "left" | "none"
+
+    if (side === "r") {
+      // RIGHT trim: changes OUT
+      let nextOut = out0 + dxSeconds;
+      if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
+      nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur || nextOut);
+
+      // Snap the moving END edge on timeline
+      const laneEdges = getLaneEdgesSeconds(prev, {
+        kind: laneKind,
+        track: laneTrack,
+        excludeKey: key,
+      });
+
+      let nextEnd = oldStart + Math.max(0, nextOut - in0);
+      const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
+
+      nextEnd = snappedEnd;
+      nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur || (in0 + (nextEnd - oldStart)));
+
+      nextPrimary = { ...primary, out: nextOut };
+
+      const newLen = Math.max(0, nextOut - in0);
+      const deltaLen = newLen - oldLen;
+
+      setTrimTip({
+        x: e.clientX + 12,
+        y: e.clientY + 12,
+        text: formatTrimTooltip({
+          side,
+          inTime: in0,
+          outTime: nextOut,
+          length: newLen,
+          deltaLength: deltaLen,
+          isRipple,
+        }),
+      });
+
+      if (isRipple) {
+        const newEnd = oldStart + Math.max(0, nextOut - in0);
+        delta = newEnd - oldEnd;
+        thresholdT = oldEnd;
+        affect = "right";
+      }
+    } else {
+      // LEFT trim
+      if (!isRipple) {
+        // NORMAL left trim: move START and IN together, keeping right edge fixed.
         const laneEdges = getLaneEdgesSeconds(prev, {
           kind: laneKind,
           track: laneTrack,
           excludeKey: key,
         });
 
-        let nextEnd = oldStart + Math.max(0, nextOut - in0);
-        const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
+        let d = dxSeconds;
 
-        nextEnd = snappedEnd;
-        nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur);
+        d = Math.max(d, -start0);
+        d = Math.max(d, -in0);
+        d = Math.min(d, out0 - MIN_LEN - in0);
 
-        nextPrimary = { ...primary, out: nextOut };
+        let nextStart = start0 + d;
+        let nextIn = in0 + d;
 
-        // Tooltip update
-        const newLen = Math.max(0, nextOut - in0);
+        const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
+        let dd = snappedStart - start0;
+
+        dd = Math.max(dd, -start0);
+        dd = Math.max(dd, -in0);
+        dd = Math.min(dd, out0 - MIN_LEN - in0);
+
+        nextStart = start0 + dd;
+        nextIn = in0 + dd;
+
+        if (e.shiftKey) {
+          const s2 = snapSeconds(nextStart, 1);
+          let dd2 = s2 - start0;
+
+          dd2 = Math.max(dd2, -start0);
+          dd2 = Math.max(dd2, -in0);
+          dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
+
+          nextStart = start0 + dd2;
+          nextIn = in0 + dd2;
+        }
+
+        nextPrimary = { ...primary, start: nextStart, in: nextIn };
+
+        const newLen = Math.max(0, out0 - nextIn);
         const deltaLen = newLen - oldLen;
 
         setTrimTip({
@@ -2326,219 +2709,173 @@ export default function GenerateEdit({ user }) {
           y: e.clientY + 12,
           text: formatTrimTooltip({
             side,
-            inTime: in0,
-            outTime: nextOut,
+            inTime: nextIn,
+            outTime: out0,
             length: newLen,
             deltaLength: deltaLen,
-            isRipple,
+            isRipple: false,
           }),
         });
 
-        if (isRipple) {
-          const newEnd = oldStart + Math.max(0, nextOut - in0);
-          delta = newEnd - oldEnd;
-          thresholdT = oldEnd;
-          affect = "right";
-        }
+        affect = "none";
       } else {
-        // LEFT trim:
-        if (!isRipple) {
-          // NORMAL left trim: move START and IN together, keeping right edge fixed.
-          const laneEdges = getLaneEdgesSeconds(prev, {
-            kind: laneKind,
-            track: laneTrack,
-            excludeKey: key,
-          });
+        // RIPPLE left-edge trim (backwards) — your fixed logic
+        const laneEdges = getLaneEdgesSeconds(prev, {
+          kind: laneKind,
+          track: laneTrack,
+          excludeKey: key,
+        });
 
-          let d = dxSeconds;
+        let d = dxSeconds;
 
-          d = Math.max(d, -start0);
-          d = Math.max(d, -in0);
-          d = Math.min(d, out0 - MIN_LEN - in0);
+        d = Math.max(d, -start0);
+        d = Math.max(d, -in0);
+        d = Math.min(d, out0 - MIN_LEN - in0);
 
-          let nextStart = start0 + d;
-          let nextIn = in0 + d;
+        let nextStart = start0 + d;
+        let nextIn = in0 + d;
 
-          const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
-          let dd = snappedStart - start0;
+        const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
+        let dd = snappedStart - start0;
 
-          dd = Math.max(dd, -start0);
-          dd = Math.max(dd, -in0);
-          dd = Math.min(dd, out0 - MIN_LEN - in0);
+        dd = Math.max(dd, -start0);
+        dd = Math.max(dd, -in0);
+        dd = Math.min(dd, out0 - MIN_LEN - in0);
 
-          nextStart = start0 + dd;
-          nextIn = in0 + dd;
+        nextStart = start0 + dd;
+        nextIn = in0 + dd;
 
-          if (e.shiftKey) {
-            const s2 = snapSeconds(nextStart, 1);
-            let dd2 = s2 - start0;
+        if (e.shiftKey) {
+          const s2 = snapSeconds(nextStart, 1);
+          let dd2 = s2 - start0;
 
-            dd2 = Math.max(dd2, -start0);
-            dd2 = Math.max(dd2, -in0);
-            dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
+          dd2 = Math.max(dd2, -start0);
+          dd2 = Math.max(dd2, -in0);
+          dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
 
-            nextStart = start0 + dd2;
-            nextIn = in0 + dd2;
-          }
-
-          nextPrimary = { ...primary, start: nextStart, in: nextIn };
-
-          const newLen = Math.max(0, out0 - nextIn);
-          const deltaLen = newLen - oldLen;
-
-          setTrimTip({
-            x: e.clientX + 12,
-            y: e.clientY + 12,
-            text: formatTrimTooltip({
-              side,
-              inTime: nextIn,
-              outTime: out0,
-              length: newLen,
-              deltaLength: deltaLen,
-              isRipple: false,
-            }),
-          });
-
-          affect = "none";
-        } else {
-          /**
-           * ✅ FIX: RIPPLE left-edge trim (backwards)
-           *
-           * You said: “Ripple backwards is causing the selected clip to expand outwards to the right.”
-           * That happens when ripple-left is implemented as changing IN while keeping START fixed,
-           * because the END moves and the clip can lengthen to the right.
-           *
-           * Correct “ripple backwards” behavior here:
-           * - Keep END fixed on the timeline
-           * - Move START and IN together (like normal left-trim)
-           * - Ripple clips BEFORE this clip on the same lane by the START delta
-           *
-           * Result: dragging the left edge NEVER expands the clip to the right.
-           */
-          const laneEdges = getLaneEdgesSeconds(prev, {
-            kind: laneKind,
-            track: laneTrack,
-            excludeKey: key,
-          });
-
-          let d = dxSeconds;
-
-          // Constraints: start >= 0, in >= 0, and length >= MIN_LEN (i.e. out - in >= MIN_LEN)
-          d = Math.max(d, -start0);
-          d = Math.max(d, -in0);
-          d = Math.min(d, out0 - MIN_LEN - in0);
-
-          // Keep END fixed on timeline => end = oldEnd always
-          // With start moving by d, the visible length changes, but end stays oldEnd.
-          // That naturally implies the clip "grows/shrinks from the left" only.
-          let nextStart = start0 + d;
-          let nextIn = in0 + d;
-
-          // Snap the MOVING EDGE (left edge / start) to lane edges
-          const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
-          let dd = snappedStart - start0;
-
-          dd = Math.max(dd, -start0);
-          dd = Math.max(dd, -in0);
-          dd = Math.min(dd, out0 - MIN_LEN - in0);
-
-          nextStart = start0 + dd;
-          nextIn = in0 + dd;
-
-          if (e.shiftKey) {
-            const s2 = snapSeconds(nextStart, 1);
-            let dd2 = s2 - start0;
-
-            dd2 = Math.max(dd2, -start0);
-            dd2 = Math.max(dd2, -in0);
-            dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
-
-            nextStart = start0 + dd2;
-            nextIn = in0 + dd2;
-          }
-
-          // Apply primary change (END on timeline remains oldEnd implicitly)
-          nextPrimary = { ...primary, start: nextStart, in: nextIn };
-
-          const newLen = Math.max(0, out0 - nextIn);
-          const deltaLen = newLen - oldLen;
-
-          setTrimTip({
-            x: e.clientX + 12,
-            y: e.clientY + 12,
-            text: formatTrimTooltip({
-              side,
-              inTime: nextIn,
-              outTime: out0,
-              length: newLen,
-              deltaLength: deltaLen,
-              isRipple: true,
-            }),
-          });
-
-          // Ripple BACKWARDS: shift clips BEFORE the original start by the same delta
-          delta = nextStart - oldStart;
-          thresholdT = oldStart;
-          affect = "left";
+          nextStart = start0 + dd2;
+          nextIn = in0 + dd2;
         }
+
+        nextPrimary = { ...primary, start: nextStart, in: nextIn };
+
+        const newLen = Math.max(0, out0 - nextIn);
+        const deltaLen = newLen - oldLen;
+
+        setTrimTip({
+          x: e.clientX + 12,
+          y: e.clientY + 12,
+          text: formatTrimTooltip({
+            side,
+            inTime: nextIn,
+            outTime: out0,
+            length: newLen,
+            deltaLength: deltaLen,
+            isRipple: true,
+          }),
+        });
+
+        delta = nextStart - oldStart;
+        thresholdT = oldStart;
+        affect = "left";
       }
+    }
 
-      // If not ripple, ONLY update the primary clip.
-      if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
-        return prev.map((c) => (c.key === key ? nextPrimary : c));
-      }
+    if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
+      return prev.map((c) => (c.key === key ? nextPrimary : c));
+    }
 
-      const laneStarts = orig.laneStarts || new Map();
+    const laneStarts = orig.laneStarts || new Map();
 
-      return prev.map((c) => {
-        if (!c) return c;
+    return prev.map((c) => {
+      if (!c) return c;
 
-        if (c.key === key) return nextPrimary;
+      if (c.key === key) return nextPrimary;
 
-        if (c.kind !== laneKind) return c;
-        if ((Number(c.track) || 0) !== laneTrack) return c;
+      if (c.kind !== laneKind) return c;
+      if ((Number(c.track) || 0) !== laneTrack) return c;
 
-        const baseStart = Number(laneStarts.get(c.key)) || 0;
+      const baseStart = Number(laneStarts.get(c.key)) || 0;
 
-        // forward ripple: move clips starting at/after threshold
-        if (affect === "right") {
-          if (baseStart >= thresholdT - 1e-6) {
-            return { ...c, start: Math.max(0, baseStart + delta) };
-          }
-          return c;
+      if (affect === "right") {
+        if (baseStart >= thresholdT - 1e-6) {
+          return { ...c, start: Math.max(0, baseStart + delta) };
         }
-
-        // backward ripple: move clips strictly BEFORE threshold
-        if (affect === "left") {
-          if (baseStart < thresholdT - 1e-6) {
-            return { ...c, start: Math.max(0, baseStart + delta) };
-          }
-          return c;
-        }
-
         return c;
-      });
+      }
+
+      if (affect === "left") {
+        if (baseStart < thresholdT - 1e-6) {
+          return { ...c, start: Math.max(0, baseStart + delta) };
+        }
+        return c;
+      }
+
+      return c;
     });
+  });
+}
+
+function onTrimPointerUp(e) {
+  if (!isTrimmingRef.current) return;
+
+  isTrimmingRef.current = false;
+  trimSideRef.current = null;
+  trimKeyRef.current = null;
+  trimStartXRef.current = 0;
+  trimOrigRef.current = null;
+
+  setTrimTip(null);
+
+  try {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  } catch {}
+}
+
+
+  function findAdjacentOnLane(prevClips, { kind, track, atTime, direction, excludeKeys = [] }) {
+  const EPS = 1e-4;
+  const ex = new Set(excludeKeys || []);
+  const candidates = prevClips.filter((c) => {
+    if (!c) return false;
+    if (ex.has(c.key)) return false;
+    if (c.kind !== kind) return false;
+    if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
+    return true;
+  });
+
+  if (direction === "right") {
+    // find clip whose start is ~ atTime
+    let best = null;
+    let bestD = Infinity;
+    for (const c of candidates) {
+      const s = Number(c.start) || 0;
+      const d = Math.abs(s - atTime);
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    return bestD <= 0.2 ? best : null; // tolerance for "butted" edits
   }
 
-  function onTrimPointerUp(e) {
-    if (!isTrimmingRef.current) return;
-
-    isTrimmingRef.current = false;
-    trimSideRef.current = null;
-    trimKeyRef.current = null;
-    trimStartXRef.current = 0;
-    trimOrigRef.current = null;
-
-    setTrimTip(null);
-
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {}
+  if (direction === "left") {
+    // find clip whose end is ~ atTime
+    let best = null;
+    let bestD = Infinity;
+    for (const c of candidates) {
+      const e = (Number(c.start) || 0) + clipLen(c);
+      const d = Math.abs(e - atTime);
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    return bestD <= 0.02 ? best : null;
   }
 
-
-  
+  return null;
+}
 
 
   
@@ -2664,6 +3001,8 @@ export default function GenerateEdit({ user }) {
       const tag = (e.target?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
       if (e.key === "v" || e.key === "V") setTool("select");
       if (e.key === "c" || e.key === "C") setTool("razor");
       if (e.key === "b" || e.key === "B") setTool("ripple");
@@ -2720,7 +3059,11 @@ export default function GenerateEdit({ user }) {
   return (
     <div
       className={`genEditWrap ${
-        tool === "razor" ? "toolRazor" : tool === "slip" ? "toolSlip" : tool === "ripple" ? "toolRipple" : "toolSelect"
+        tool === "razor" ? "toolRazor"
+        : tool === "slip" ? "toolSlip"
+        : tool === "ripple" ? "toolRipple"
+        : tool === "roll" ? "toolRoll"
+        : "toolSelect"
       }`}
     >
       <GeneratePublishModal
@@ -2981,6 +3324,9 @@ export default function GenerateEdit({ user }) {
               </button>
               <button type="button" className={`genEditToolBtn ${tool === "slip" ? "active" : ""}`} onClick={() => setTool("slip")} title="Slip Tool (Y)">
                 ⇆
+              </button>
+              <button type="button" className={`genEditToolBtn ${tool === "roll" ? "active" : ""}`} onClick={() => setTool("roll")} title="Rool Tool (N)">
+                ⟺
               </button>
             </div>
 
