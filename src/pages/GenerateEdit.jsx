@@ -205,7 +205,7 @@ export default function GenerateEdit({ user }) {
   const prevPpsRef = useRef(pps);
 
   // Tooling
-  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip"
+  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip" | "roll"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
   const RAZOR_SNAP_SEC = 0.25;
 
@@ -243,6 +243,93 @@ export default function GenerateEdit({ user }) {
   }, [audioLaneCount]);
 
   const LANES = useMemo(() => [...VIDEO_TRACKS, ...AUDIO_TRACKS], [VIDEO_TRACKS, AUDIO_TRACKS]);
+
+    // ---------------- Undo / Redo ----------------
+  const UNDO_LIMIT = 60;
+
+  const undoStackRef = useRef([]); // [{ sequenceTitle, clips, playhead, audioLaneCount }]
+  const redoStackRef = useRef([]);
+
+  function getSnapshot() {
+    return {
+      sequenceTitle: String(sequenceTitle || "Timeline"),
+      clips: Array.isArray(clips) ? clips : [],
+      playhead: Number(playhead || 0),
+      audioLaneCount: clamp(Number(audioLaneCount) || 1, 1, 5),
+    };
+  }
+
+  function applySnapshot(snap) {
+    if (!snap) return;
+    setSequenceTitle(String(snap.sequenceTitle || "Timeline"));
+    setClips(Array.isArray(snap.clips) ? snap.clips : []);
+    setAudioLaneCount(clamp(Number(snap.audioLaneCount) || 1, 1, 5));
+    setPlayhead(Math.max(0, Number(snap.playhead) || 0));
+    playheadRef.current = Math.max(0, Number(snap.playhead) || 0);
+
+    // selection shouldn't be undone; clear it for sanity
+    setSelectedClipKeys(new Set());
+    setActiveClipKey(null);
+
+    // force viewer re-align
+    loadedClipKeyRef.current = null;
+    loadedSrcRef.current = "";
+    requestAnimationFrame(() => {
+      ensureLoadedForTimelineTime(playheadRef.current, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("applySnapshot");
+      });
+    });
+  }
+
+  function pushUndo(reason = "") {
+    // Don't record while hydrating initial load
+    if (!didHydrateRef.current) return;
+
+    const snap = getSnapshot();
+    const stack = undoStackRef.current;
+
+    // prevent pushing identical snapshot back-to-back (cheap check)
+    const last = stack[stack.length - 1];
+    const same =
+      last &&
+      last.playhead === snap.playhead &&
+      last.audioLaneCount === snap.audioLaneCount &&
+      last.sequenceTitle === snap.sequenceTitle &&
+      JSON.stringify(last.clips) === JSON.stringify(snap.clips);
+
+    if (!same) {
+      stack.push(snap);
+      if (stack.length > UNDO_LIMIT) stack.splice(0, stack.length - UNDO_LIMIT);
+      undoStackRef.current = stack;
+      redoStackRef.current = []; // new action clears redo history
+    }
+  }
+
+  function undo() {
+    const stack = undoStackRef.current;
+    if (!stack.length) return;
+
+    const current = getSnapshot();
+    const prev = stack.pop();
+
+    redoStackRef.current.push(current);
+    undoStackRef.current = stack;
+
+    applySnapshot(prev);
+  }
+
+  function redo() {
+    const stack = redoStackRef.current;
+    if (!stack.length) return;
+
+    const current = getSnapshot();
+    const next = stack.pop();
+
+    undoStackRef.current.push(current);
+    if (undoStackRef.current.length > UNDO_LIMIT) undoStackRef.current.splice(0, undoStackRef.current.length - UNDO_LIMIT);
+
+    applySnapshot(next);
+  }
 
   // -------- Route -> ensure project id exists --------
   useEffect(() => {
@@ -382,11 +469,15 @@ export default function GenerateEdit({ user }) {
     return `${sideLabel}: ${fmtTime(length)}${deltaLabel}`;
   }
 
-  function addAudioLane() {
+  function addAudioLane() 
+  {
+    pushUndo("add audio lane");
     setAudioLaneCount((n) => clamp((Number(n) || 1) + 1, 1, 5));
   }
+  
 
   function removeAudioLane(trackToRemove) {
+    pushUndo("add audio lane");
     // Protect A1 (track 0) so you never end up with 0 audio lanes
     if (Number(trackToRemove) === 0) return;
 
@@ -1627,6 +1718,9 @@ export default function GenerateEdit({ user }) {
 
   // -------- Clip add/remove --------
   async function addVideoToTimelineAt(video, start) {
+    
+    pushUndo("add clip");
+    
     const dur = await getVideoDurationSeconds(video);
     const item = makeTimelineItem({
       kind: "video",
@@ -1635,6 +1729,8 @@ export default function GenerateEdit({ user }) {
       start: Math.max(0, start),
       sourceDuration: dur,
     });
+
+    
 
     setClips((t) => [...t, item]);
     setActiveClipKey(item.key);
@@ -1646,6 +1742,7 @@ export default function GenerateEdit({ user }) {
   }
 
   function removeFromTimeline(keysToRemove) {
+    pushUndo("delete");
     const keys = Array.from(keysToRemove || []);
     if (!keys.length) return;
 
@@ -1672,6 +1769,7 @@ export default function GenerateEdit({ user }) {
   }
 
   function rippleDelete(keysToRemove) {
+    pushUndo("delete");
     const keys = Array.from(keysToRemove || []);
     if (!keys.length) return;
 
@@ -1767,6 +1865,35 @@ export default function GenerateEdit({ user }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dirty, isSaving, saveProjectNow]);
 
+    useEffect(() => {
+    const onKeyDown = (e) => {
+      const key = (e.key || "").toLowerCase();
+      const tag = (e.target?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      if (isTyping) return;
+
+      const mod = e.ctrlKey || e.metaKey;
+
+      // Undo: Ctrl/Cmd+Z
+      if (mod && key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+
+      // Redo: Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y
+      if ((mod && key === "z" && e.shiftKey) || (mod && key === "y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sequenceTitle, clips, playhead, audioLaneCount]);
+
   // Delete / Backspace handling
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -1806,6 +1933,7 @@ export default function GenerateEdit({ user }) {
 
   // -------- Clip drag (shift snap) / Razor split --------
   function splitClipAtTime(clipKey, timelineT) {
+    pushUndo("razor split");
     setClips((prev) => {
       const clip = prev.find((c) => c.key === clipKey);
       if (!clip) return prev;
@@ -1886,6 +2014,9 @@ export default function GenerateEdit({ user }) {
     const clip = clips.find((c) => c.key === clipKey);
     if (!clip) return;
 
+    // before changing anything
+    pushUndo("move clip");
+
     isDraggingClipRef.current = true;
     dragClipKeyRef.current = clipKey;
     dragClipStartRef.current = Number(clip.start) || 0;
@@ -1901,6 +2032,7 @@ export default function GenerateEdit({ user }) {
       .filter((c) => groupKeys.includes(c.key))
       .filter((c) => c.kind === primary.kind)
       .map((c) => ({ key: c.key, start: Number(c.start) || 0, kind: c.kind, track: Number(c.track) || 0 }));
+
 
     dragGroupRef.current = group;
     dragGroupPrimaryKeyRef.current = clipKey;
@@ -1992,6 +2124,7 @@ export default function GenerateEdit({ user }) {
 
   // -------- Slip --------
   function onSlipPointerDown(e, clipKey) {
+    pushUndo("slip");
     e.preventDefault();
     e.stopPropagation();
 
@@ -2072,6 +2205,7 @@ export default function GenerateEdit({ user }) {
 
   // -------- Trim / Ripple trim (same handlers; behavior branches on tool) --------
   function onTrimPointerDown(e, clipKey, side) {
+    pushUndo(`trim ${side}`);
     e.preventDefault();
     e.stopPropagation();
 
@@ -2403,6 +2537,12 @@ export default function GenerateEdit({ user }) {
     } catch {}
   }
 
+
+  
+
+
+  
+
   // -------- Library drag/drop --------
   function onLibDragStart(e, v) {
     e.dataTransfer.effectAllowed = "copy";
@@ -2528,6 +2668,7 @@ export default function GenerateEdit({ user }) {
       if (e.key === "c" || e.key === "C") setTool("razor");
       if (e.key === "b" || e.key === "B") setTool("ripple");
       if (e.key === "y" || e.key === "Y") setTool("slip");
+      if (e.key === "n" || e.key === "N") setTool("roll");
     };
 
     window.addEventListener("keydown", onKeyDown);
