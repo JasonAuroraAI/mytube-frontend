@@ -209,7 +209,7 @@ export default function GenerateEdit({ user }) {
   const prevPpsRef = useRef(pps);
 
   // Tooling
-  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip" | "roll"
+  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip" | "roll" | "trackFwd"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
   const RAZOR_SNAP_SEC = 0.25;
 
@@ -257,6 +257,29 @@ export default function GenerateEdit({ user }) {
   // -------- Copy / Paste clipboard --------
 // Stores a snapshot of selected clips with starts relative to the earliest start
 const clipClipboardRef = useRef(null);
+
+function selectTrackForwardFrom({ kind, track, time, allLanes = false }) {
+  const t0 = Number(time) || 0;
+  const EPS = 1e-6;
+
+  const keys = clipsSorted
+    .filter((c) => {
+      if (!c) return false;
+
+      if (!allLanes) {
+        if (c.kind !== kind) return false;
+        if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
+      }
+
+      const s = Number(c.start) || 0;
+      return s >= t0 - EPS;
+    })
+    // keep selection order consistent (left->right)
+    .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+    .map((c) => c.key);
+
+  setSelectionFromKeys(keys, { additive: false });
+}
 
 function newClipKeyLike(oldKey) {
   return `${oldKey}-P-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -569,6 +592,20 @@ function pasteClipboardAtPlayhead() {
     else if (!additive) setActiveClipKey(null);
   }
 
+  function setSelectionImmediate(keys, { additive } = { additive: false }) {
+    const next = additive ? new Set(selectedClipKeysRef.current || []) : new Set();
+    for (const k of keys || []) next.add(k);
+
+    // state
+    setSelectedClipKeys(next);
+
+    // ✅ ref (so drag logic sees it immediately, same frame)
+    selectedClipKeysRef.current = next;
+
+    const arr = Array.from(next);
+    setActiveClipKey(arr.length ? arr[arr.length - 1] : null);
+  }
+
   function clampSlipIn(nextIn, srcDur, len) {
     const maxIn = Math.max(0, (Number(srcDur) || 0) - (Number(len) || 0));
     return clamp(Number(nextIn) || 0, 0, maxIn);
@@ -626,6 +663,31 @@ function pasteClipboardAtPlayhead() {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
     if (tool === "razor") return; // keep lanes inert in razor mode, like Premiere
+
+      // ✅ Track Select Forward: clicking empty lane space selects forward from mouse time
+    if (tool === "trackFwd") {
+      // Only when clicking "empty" lanes background
+      if (e.target?.closest?.(".genEditClip")) return;
+      if (e.target?.closest?.(".genEditPlayheadHandle")) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const lane = getLaneFromClientY(e.clientY);
+      if (!lane) return;
+
+      const t = getTimeFromClientX(e.clientX);
+
+      // Shift = all lanes
+      selectTrackForwardFrom({
+        kind: lane.kind,
+        track: Number(lane.track) || 0,
+        time: t,
+        allLanes: !!e.shiftKey,
+      });
+
+      return;
+    }
 
     // Only start box-select when clicking "empty" lanes background
     if (e.target?.closest?.(".genEditClip")) return;
@@ -1757,6 +1819,7 @@ function pasteClipboardAtPlayhead() {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
     if (isDraggingPlayheadRef.current) return;
+    if (tool === "trackFwd") return;
 
     // If you clicked *on* something interactive, do nothing.
     if (e.target?.closest?.(".genEditClip")) return;
@@ -2132,6 +2195,32 @@ function pasteClipboardAtPlayhead() {
       }
       return;
     }
+  
+    // ✅ TRACK SELECT FORWARD: click selects everything forward AND allows dragging the group
+    if (tool === "trackFwd") {
+      const clip = clips.find((c) => c.key === clipKey);
+      if (!clip) return;
+
+      const t0 = Number(clip.start) || 0;
+      const allLanes = !!e.shiftKey;
+
+      const keys = clipsSorted
+        .filter((c) => {
+          if (!c) return false;
+          if (!allLanes) {
+            if (c.kind !== clip.kind) return false;
+            if ((Number(c.track) || 0) !== (Number(clip.track) || 0)) return false;
+          }
+          return (Number(c.start) || 0) >= t0 - 1e-6;
+        })
+        .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+        .map((c) => c.key);
+
+      // ✅ Set selection immediately so drag uses it right away
+      setSelectionImmediate(keys, { additive: false });
+
+      // NOTE: do NOT return — continue into normal drag behavior below
+    }
 
     // ✅ SELECT MODE (existing drag behavior)
     const clip = clips.find((c) => c.key === clipKey);
@@ -2153,7 +2242,11 @@ function pasteClipboardAtPlayhead() {
     const groupKeys = sel && sel.has(clipKey) ? Array.from(sel) : [clipKey];
     const group = clips
       .filter((c) => groupKeys.includes(c.key))
-      .filter((c) => c.kind === primary.kind)
+      .filter((c) => {
+          // In Track Select Forward + Shift, allow cross-lane drag
+          if (tool === "trackFwd" && e.shiftKey) return true;
+          return c.kind === primary.kind;
+        })
       .map((c) => ({ key: c.key, start: Number(c.start) || 0, kind: c.kind, track: Number(c.track) || 0 }));
 
 
@@ -3001,13 +3094,17 @@ function onTrimPointerUp(e) {
       const tag = (e.target?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
+      // ✅ Don't switch tools while using modifier shortcuts (Ctrl/Cmd/Alt)
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-      if (e.key === "v" || e.key === "V") setTool("select");
-      if (e.key === "c" || e.key === "C") setTool("razor");
-      if (e.key === "b" || e.key === "B") setTool("ripple");
-      if (e.key === "y" || e.key === "Y") setTool("slip");
-      if (e.key === "n" || e.key === "N") setTool("roll");
+      const k = (e.key || "").toLowerCase();
+
+      if (k === "v") setTool("select");
+      if (k === "c") setTool("razor");
+      if (k === "b") setTool("ripple");
+      if (k === "y") setTool("slip");
+      if (k === "n") setTool("roll");
+      if (k === "a") setTool("trackFwd"); // ✅ Track Select Forward (A)
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -3328,6 +3425,16 @@ function onTrimPointerUp(e) {
               <button type="button" className={`genEditToolBtn ${tool === "roll" ? "active" : ""}`} onClick={() => setTool("roll")} title="Rool Tool (N)">
                 ⟺
               </button>
+              <button
+                type="button"
+                className={`genEditToolBtn ${tool === "trackFwd" ? "active" : ""}`}
+                onClick={() => setTool("trackFwd")}
+                title="Track Select Forward (A)"
+              >
+                {/* placeholder icon until you swap it */}
+                ⇥
+              </button>
+
             </div>
 
             <div className="genEditZoomLabel">
