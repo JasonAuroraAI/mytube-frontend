@@ -129,9 +129,6 @@ export default function GenerateEdit({ user }) {
   const boxStartRef = useRef({ x: 0, y: 0 }); // client coords
   const boxAdditiveRef = useRef(false);
 
-  
-
-
   const [publishOpen, setPublishOpen] = useState(false);
 
   // Library
@@ -208,9 +205,24 @@ export default function GenerateEdit({ user }) {
   const prevPpsRef = useRef(pps);
 
   // Tooling
-  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple"
+  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
   const RAZOR_SNAP_SEC = 0.25;
+
+  // --- Slip tool state ---
+  const isSlippingRef = useRef(false);
+  const slipKeyRef = useRef(null);
+  const slipStartClientXRef = useRef(0);
+  const slipOrigRef = useRef(null); // { in, out, len, srcDur }
+  const slipPointerIdRef = useRef(null);
+
+  // Tooltip for slip
+  const [slipTip, setSlipTip] = useState(null);
+  // slipTip: { x, y, text } using client coords (position:fixed)
+
+  // Trim/Ripple tooltip (same behavior as Trim/Slip: appears on drag, follows cursor, hides on up)
+  const [trimTip, setTrimTip] = useState(null);
+  // trimTip: { x, y, text } using client coords (position:fixed)
 
   // UI-only duration overrides for videos missing durationSeconds
   const [libDurMap, setLibDurMap] = useState(() => new Map());
@@ -231,8 +243,6 @@ export default function GenerateEdit({ user }) {
   }, [audioLaneCount]);
 
   const LANES = useMemo(() => [...VIDEO_TRACKS, ...AUDIO_TRACKS], [VIDEO_TRACKS, AUDIO_TRACKS]);
-
-
 
   // -------- Route -> ensure project id exists --------
   useEffect(() => {
@@ -270,13 +280,6 @@ export default function GenerateEdit({ user }) {
 
       setClips(migrated);
 
-      // auto-size audio lanes to fit existing audio clips (cap 5)
-      const maxAudioTrack = migrated
-        .filter((c) => c?.kind === "audio")
-        .reduce((m, c) => Math.max(m, Number(c.track) || 0), 0);
-
-      setAudioLaneCount(clamp(maxAudioTrack + 1, 1, 5));
-
       // ✅ Prefer saved lane count (keeps empty lanes), fallback to fit existing audio clips
       const savedLaneCount = Number(p.audioLaneCount);
       if (Number.isFinite(savedLaneCount) && savedLaneCount > 0) {
@@ -289,30 +292,30 @@ export default function GenerateEdit({ user }) {
       }
 
       setPlayhead(Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0);
-      } else {
-    const indexedTitle = getIndexedProjectTitle(projectId);
+    } else {
+      const indexedTitle = getIndexedProjectTitle(projectId);
 
-    const initialTitle = indexedTitle || "Timeline";
-    setSequenceTitle(initialTitle);
+      const initialTitle = indexedTitle || "Timeline";
+      setSequenceTitle(initialTitle);
 
-    const initial = {
-      id: projectId,
-      sequenceTitle: initialTitle,
-      updatedAt: Date.now(),
-      playhead: 0,
-      clips: [],
-      audioLaneCount: 1,
-    };
+      const initial = {
+        id: projectId,
+        sequenceTitle: initialTitle,
+        updatedAt: Date.now(),
+        playhead: 0,
+        clips: [],
+        audioLaneCount: 1,
+      };
 
-    saveProjectById(projectId, initial);
+      saveProjectById(projectId, initial);
 
-    const idx = loadProjectIndex();
-    const nextIdx = [
-      { id: projectId, sequenceTitle: initialTitle, updatedAt: initial.updatedAt },
-      ...idx.filter((x) => x?.id !== projectId),
-    ];
-    saveProjectIndex(nextIdx);
-  }
+      const idx = loadProjectIndex();
+      const nextIdx = [
+        { id: projectId, sequenceTitle: initialTitle, updatedAt: initial.updatedAt },
+        ...idx.filter((x) => x?.id !== projectId),
+      ];
+      saveProjectIndex(nextIdx);
+    }
 
     // Reset viewer bookkeeping on load
     loadedClipKeyRef.current = null;
@@ -339,10 +342,9 @@ export default function GenerateEdit({ user }) {
     setDirty(true);
   }, [sequenceTitle, clips, playhead]);
 
-
-    function rectsIntersect(a, b) {
-      return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-    }
+  function rectsIntersect(a, b) {
+    return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+  }
 
   function setSelectionFromKeys(keys, { additive } = { additive: false }) {
     setSelectedClipKeys((prev) => {
@@ -357,6 +359,28 @@ export default function GenerateEdit({ user }) {
     else if (!additive) setActiveClipKey(null);
   }
 
+  function clampSlipIn(nextIn, srcDur, len) {
+    const maxIn = Math.max(0, (Number(srcDur) || 0) - (Number(len) || 0));
+    return clamp(Number(nextIn) || 0, 0, maxIn);
+  }
+
+  function fmtSignedSeconds(delta) {
+    const d = Number(delta) || 0;
+    const sign = d >= 0 ? "+" : "−";
+    return `${sign}${fmtTime(Math.abs(d))}`;
+  }
+
+  function fmtDelta(seconds) {
+    const s = Number(seconds) || 0;
+    const sign = s >= 0 ? "+" : "−";
+    return `${sign}${fmtTime(Math.abs(s))}`;
+  }
+
+  function formatTrimTooltip({ side, inTime, outTime, length, deltaLength, isRipple }) {
+    const sideLabel = side === "l" ? (isRipple ? "Ripple Trim" : "Trim") : isRipple ? "Ripple Trim" : "Trim";
+    const deltaLabel = Math.abs(deltaLength) > 1e-6 ? ` (${fmtDelta(deltaLength)})` : "";
+    return `${sideLabel}: ${fmtTime(length)}${deltaLabel}`;
+  }
 
   function addAudioLane() {
     setAudioLaneCount((n) => clamp((Number(n) || 1) + 1, 1, 5));
@@ -392,9 +416,6 @@ export default function GenerateEdit({ user }) {
     // Only start box-select when clicking "empty" lanes background
     if (e.target?.closest?.(".genEditClip")) return;
     if (e.target?.closest?.(".genEditPlayheadHandle")) return;
-
-    // We only want this inside lanes area — this handler is attached to lanes wrapper,
-    // so it won't fire for the header anyway.
 
     e.preventDefault();
     e.stopPropagation();
@@ -513,7 +534,6 @@ export default function GenerateEdit({ user }) {
     window.addEventListener("pointercancel", onUp);
   }
 
-
   // -- Selection --
   function setSingleSelection(key) {
     const next = new Set();
@@ -556,7 +576,10 @@ export default function GenerateEdit({ user }) {
       saveProjectById(projectId, payload);
 
       const idx = loadProjectIndex();
-      const nextIdx = [{ id: projectId, sequenceTitle: payload.sequenceTitle, updatedAt: payload.updatedAt }, ...idx.filter((x) => x?.id !== projectId)];
+      const nextIdx = [
+        { id: projectId, sequenceTitle: payload.sequenceTitle, updatedAt: payload.updatedAt },
+        ...idx.filter((x) => x?.id !== projectId),
+      ];
       saveProjectIndex(nextIdx);
 
       setDirty(false);
@@ -685,7 +708,7 @@ export default function GenerateEdit({ user }) {
 
   // -------- Timeline metrics --------
   const clipsSorted = useMemo(() => {
-    return clips.slice().sort((a, b) => (a.start - b.start) || (Number(b.track) || 0) - (Number(a.track) || 0));
+    return clips.slice().sort((a, b) => a.start - b.start || (Number(b.track) || 0) - (Number(a.track) || 0));
   }, [clips]);
 
   const timelineEnd = useMemo(() => {
@@ -722,8 +745,6 @@ export default function GenerateEdit({ user }) {
     prevTimelineWidthRef.current = timelineWidth;
   }, [timelineWidth, PPS, playhead]);
 
-  
-
   function clipCoversTime(c, t) {
     const s = Number(c.start) || 0;
     const e = s + clipLen(c);
@@ -739,32 +760,32 @@ export default function GenerateEdit({ user }) {
   }
 
   function clipEnd(c) {
-  return (Number(c.start) || 0) + clipLen(c);
-}
-
-function getLaneEdgesSeconds(allClips, { kind, track, excludeKey }) {
-  const edges = [];
-  for (const c of allClips) {
-    if (!c) continue;
-    if (c.key === excludeKey) continue;
-    if (c.kind !== kind) continue;
-    if ((Number(c.track) || 0) !== (Number(track) || 0)) continue;
-
-    edges.push(Number(c.start) || 0);
-    edges.push(clipEnd(c));
+    return (Number(c.start) || 0) + clipLen(c);
   }
-  return edges;
-}
 
-function snapToNearest(t, targets, snapSec) {
-  const tt = Number(t) || 0;
-  let best = { v: tt, d: Infinity };
-  for (const x of targets || []) {
-    const d = Math.abs(tt - x);
-    if (d < best.d) best = { v: x, d };
+  function getLaneEdgesSeconds(allClips, { kind, track, excludeKey }) {
+    const edges = [];
+    for (const c of allClips) {
+      if (!c) continue;
+      if (c.key === excludeKey) continue;
+      if (c.kind !== kind) continue;
+      if ((Number(c.track) || 0) !== (Number(track) || 0)) continue;
+
+      edges.push(Number(c.start) || 0);
+      edges.push(clipEnd(c));
+    }
+    return edges;
   }
-  return best.d <= (Number(snapSec) || 0) ? best.v : tt;
-}
+
+  function snapToNearest(t, targets, snapSec) {
+    const tt = Number(t) || 0;
+    let best = { v: tt, d: Infinity };
+    for (const x of targets || []) {
+      const d = Math.abs(tt - x);
+      if (d < best.d) best = { v: x, d };
+    }
+    return best.d <= (Number(snapSec) || 0) ? best.v : tt;
+  }
 
   function findNextVideoStart(afterT, excludeKey = null) {
     const t = Number(afterT) || 0;
@@ -839,87 +860,83 @@ function snapToNearest(t, targets, snapSec) {
   }
 
   // ---------- Ripple delete helpers ----------
-function laneKeyOf(c) {
-  return `${c?.kind}:${Number(c?.track) || 0}`;
-}
-
-function buildRipplePlan(prevClips, keysToRemove) {
-  const removeSet = new Set(keysToRemove || []);
-  const removedByLane = new Map();
-
-  // Collect removed intervals per lane
-  for (const c of prevClips) {
-    if (!c || !removeSet.has(c.key)) continue;
-    const lk = laneKeyOf(c);
-    const s = Number(c.start) || 0;
-    const e = s + clipLen(c);
-    if (e <= s) continue;
-
-    if (!removedByLane.has(lk)) removedByLane.set(lk, []);
-    removedByLane.get(lk).push({ start: s, end: e, len: e - s });
+  function laneKeyOf(c) {
+    return `${c?.kind}:${Number(c?.track) || 0}`;
   }
 
-  // Normalize: sort + merge overlaps (so multiple deletions don't double-shift)
-  const planByLane = new Map();
-  for (const [lk, intervals] of removedByLane.entries()) {
-    const sorted = intervals
-      .slice()
-      .sort((a, b) => a.start - b.start || a.end - b.end);
+  function buildRipplePlan(prevClips, keysToRemove) {
+    const removeSet = new Set(keysToRemove || []);
+    const removedByLane = new Map();
 
-    const merged = [];
-    for (const it of sorted) {
-      const last = merged[merged.length - 1];
-      if (!last) merged.push({ ...it });
-      else if (it.start <= last.end + 1e-6) {
-        // overlap/abut -> merge
-        last.end = Math.max(last.end, it.end);
-        last.len = last.end - last.start;
-      } else {
-        merged.push({ ...it });
+    // Collect removed intervals per lane
+    for (const c of prevClips) {
+      if (!c || !removeSet.has(c.key)) continue;
+      const lk = laneKeyOf(c);
+      const s = Number(c.start) || 0;
+      const e = s + clipLen(c);
+      if (e <= s) continue;
+
+      if (!removedByLane.has(lk)) removedByLane.set(lk, []);
+      removedByLane.get(lk).push({ start: s, end: e, len: e - s });
+    }
+
+    // Normalize: sort + merge overlaps (so multiple deletions don't double-shift)
+    const planByLane = new Map();
+    for (const [lk, intervals] of removedByLane.entries()) {
+      const sorted = intervals.slice().sort((a, b) => a.start - b.start || a.end - b.end);
+
+      const merged = [];
+      for (const it of sorted) {
+        const last = merged[merged.length - 1];
+        if (!last) merged.push({ ...it });
+        else if (it.start <= last.end + 1e-6) {
+          // overlap/abut -> merge
+          last.end = Math.max(last.end, it.end);
+          last.len = last.end - last.start;
+        } else {
+          merged.push({ ...it });
+        }
       }
+
+      // Precompute cumulative shifts for fast lookup
+      let cum = 0;
+      const steps = merged.map((m) => {
+        const step = { ...m, shiftAfter: cum + m.len };
+        cum += m.len;
+        return step;
+      });
+
+      planByLane.set(lk, { intervals: steps, total: cum });
     }
 
-    // Precompute cumulative shifts for fast lookup
-    let cum = 0;
-    const steps = merged.map((m) => {
-      const step = { ...m, shiftAfter: cum + m.len };
-      cum += m.len;
-      return step;
-    });
-
-    planByLane.set(lk, { intervals: steps, total: cum });
+    return { removeSet, planByLane };
   }
 
-  return { removeSet, planByLane };
-}
+  function rippleShiftForTime(intervals, t) {
+    // intervals are merged, in ascending time, with "shiftAfter" cumulative included
+    const tt = Number(t) || 0;
+    let shift = 0;
 
-function rippleShiftForTime(intervals, t) {
-  // intervals are merged, in ascending time, with "shiftAfter" cumulative included
-  const tt = Number(t) || 0;
-  let shift = 0;
-
-  for (const it of intervals) {
-    // If time is after this interval, accumulate its length
-    if (tt >= it.end - 1e-6) {
-      shift = it.shiftAfter;
-      continue;
+    for (const it of intervals) {
+      // If time is after this interval, accumulate its length
+      if (tt >= it.end - 1e-6) {
+        shift = it.shiftAfter;
+        continue;
+      }
+      break;
     }
-    // If time is inside this interval, we do NOT shift it "past" the interval;
-    // caller decides snapping behavior.
-    break;
+
+    return shift;
   }
 
-  return shift;
-}
-
-function isTimeInsideAny(intervals, t) {
-  const tt = Number(t) || 0;
-  for (const it of intervals) {
-    if (tt >= it.start - 1e-6 && tt <= it.end + 1e-6) return it;
-    if (tt < it.start) break;
+  function isTimeInsideAny(intervals, t) {
+    const tt = Number(t) || 0;
+    for (const it of intervals) {
+      if (tt >= it.start - 1e-6 && tt <= it.end + 1e-6) return it;
+      if (tt < it.start) break;
+    }
+    return null;
   }
-  return null;
-}
 
   function snapToEdges(nextStart, movingKey) {
     const moving = clips.find((c) => c.key === movingKey);
@@ -1147,9 +1164,7 @@ function isTimeInsideAny(intervals, t) {
     if (autoplay || wantedPlayRef.current) {
       const p = v.play?.();
       if (p && typeof p.catch === "function") {
-        p.catch(() => {
-          // autoplay can reject; pause-catcher / resume glue can retry on ready events
-        });
+        p.catch(() => {});
       }
     }
   }
@@ -1347,7 +1362,7 @@ function isTimeInsideAny(intervals, t) {
 
     const cur = endingClip || findVideoClipAtTime(playheadRef.current ?? playhead);
 
-    const endT = cur ? (Number(cur.start) || 0) + clipLen(cur) : (playheadRef.current ?? playhead);
+    const endT = cur ? (Number(cur.start) || 0) + clipLen(cur) : playheadRef.current ?? playhead;
     const nextStart = findNextVideoStart(endT, cur?.key || null);
 
     if (nextStart == null) {
@@ -1630,99 +1645,117 @@ function isTimeInsideAny(intervals, t) {
     });
   }
 
-  function removeFromTimeline(key) {
-    rippleDelete([key]);
+  function removeFromTimeline(keysToRemove) {
+    const keys = Array.from(keysToRemove || []);
+    if (!keys.length) return;
+
+    const removingLoaded = keys.includes(loadedClipKeyRef.current);
+
+    setClips((prev) => prev.filter((c) => c && !keys.includes(c.key)));
+
+    setSelectedClipKeys(new Set());
+    setActiveClipKey(null);
+
+    // If we deleted the loaded clip, force the viewer to re-align on the next tick
+    requestAnimationFrame(() => {
+      const t = playheadRef.current ?? playhead;
+
+      if (removingLoaded) {
+        loadedClipKeyRef.current = null;
+        loadedSrcRef.current = "";
+      }
+
+      ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("plainDelete");
+      });
+    });
   }
 
   function rippleDelete(keysToRemove) {
-  const keys = Array.from(keysToRemove || []);
-  if (!keys.length) return;
+    const keys = Array.from(keysToRemove || []);
+    if (!keys.length) return;
 
-  // If we are deleting the currently-loaded clip, force a reload afterwards
-  const removingLoaded = keys.includes(loadedClipKeyRef.current);
+    // If we are deleting the currently-loaded clip, force a reload afterwards
+    const removingLoaded = keys.includes(loadedClipKeyRef.current);
 
-  setClips((prev) => {
-    const { removeSet, planByLane } = buildRipplePlan(prev, keys);
+    // Build plan from current clips BEFORE update (needed for playhead correction)
+    const planForPlayhead = buildRipplePlan(clips, keys);
 
-    // First delete
-    const kept = prev.filter((c) => c && !removeSet.has(c.key));
+    setClips((prev) => {
+      const { removeSet, planByLane } = buildRipplePlan(prev, keys);
 
-    // Then shift clips per lane
-    const next = kept.map((c) => {
-      const lk = laneKeyOf(c);
-      const plan = planByLane.get(lk);
-      if (!plan || !plan.total) return c;
+      // First delete
+      const kept = prev.filter((c) => c && !removeSet.has(c.key));
 
-      const s = Number(c.start) || 0;
-      const shift = rippleShiftForTime(plan.intervals, s);
-      if (shift <= 0) return c;
+      // Then shift clips per lane
+      const next = kept.map((c) => {
+        const lk = laneKeyOf(c);
+        const plan = planByLane.get(lk);
+        if (!plan || !plan.total) return c;
 
-      return { ...c, start: Math.max(0, s - shift) };
+        const s = Number(c.start) || 0;
+        const shift = rippleShiftForTime(plan.intervals, s);
+        if (shift <= 0) return c;
+
+        return { ...c, start: Math.max(0, s - shift) };
+      });
+
+      return next;
     });
 
-    return next;
-  });
+    // Selection cleanup
+    setSelectedClipKeys(new Set());
+    setActiveClipKey(null);
 
-  // Selection cleanup (caller can do too, but safe here)
-  setSelectedClipKeys(new Set());
-  setActiveClipKey(null);
+    // Adjust playhead after the state update lands
+    requestAnimationFrame(() => {
+      const t0 = playheadRef.current ?? playhead;
 
-  // Adjust playhead after the state update lands
-  requestAnimationFrame(() => {
-    const t0 = playheadRef.current ?? playhead;
+      // Ripple playhead based on VIDEO lane
+      const videoLaneKey = "video:0";
+      const plan = planForPlayhead.planByLane.get(videoLaneKey);
 
-    // Compute playhead shift based on the lane it currently sits on:
-    // We don't have a "playhead lane", so we ripple playhead based on VIDEO lane.
-    // (This matches typical editors where the timebase is the main video track.)
-    // If you want it based on active clip lane instead, I can swap this logic.
-    const videoLaneKey = "video:0";
-    const plan = buildRipplePlan(clips, keys).planByLane.get(videoLaneKey);
+      let t1 = t0;
 
-    let t1 = t0;
+      if (plan && plan.total) {
+        const inside = isTimeInsideAny(plan.intervals, t0);
 
-    if (plan && plan.total) {
-      const inside = isTimeInsideAny(plan.intervals, t0);
-
-      if (inside) {
-        // Snap to start of removed region, then apply any previous intervals shift
-        const priorShift = rippleShiftForTime(plan.intervals, inside.start);
-        t1 = Math.max(0, inside.start - priorShift);
-      } else {
-        const shift = rippleShiftForTime(plan.intervals, t0);
-        t1 = Math.max(0, t0 - shift);
+        if (inside) {
+          const priorShift = rippleShiftForTime(plan.intervals, inside.start);
+          t1 = Math.max(0, inside.start - priorShift);
+        } else {
+          const shift = rippleShiftForTime(plan.intervals, t0);
+          t1 = Math.max(0, t0 - shift);
+        }
       }
-    }
 
-    setPlayhead(t1);
-    playheadRef.current = t1;
+      setPlayhead(t1);
+      playheadRef.current = t1;
 
-    // If we deleted the loaded clip, force the viewer to re-align
-    if (removingLoaded) {
-      loadedClipKeyRef.current = null;
-      loadedSrcRef.current = "";
-    }
+      // If we deleted the loaded clip, force the viewer to re-align
+      if (removingLoaded) {
+        loadedClipKeyRef.current = null;
+        loadedSrcRef.current = "";
+      }
 
-    ensureLoadedForTimelineTime(t1, { autoplay: wantedPlayRef.current }).finally(() => {
-      if (wantedPlayRef.current) forceResume("rippleDelete");
+      ensureLoadedForTimelineTime(t1, { autoplay: wantedPlayRef.current }).finally(() => {
+        if (wantedPlayRef.current) forceResume("rippleDelete");
+      });
     });
-  });
-}
+  }
 
   // Ctrl/Cmd + S = Save
   useEffect(() => {
     const onKeyDown = (e) => {
       const key = (e.key || "").toLowerCase();
 
-      // Ctrl+S (Windows/Linux) or Cmd+S (Mac)
       if ((e.ctrlKey || e.metaKey) && key === "s") {
         e.preventDefault();
 
-        // Optional: don’t save if you're typing in an input/textarea
         const tag = (e.target?.tagName || "").toLowerCase();
         const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
         if (isTyping) return;
 
-        // Avoid spam / no-op
         if (isSaving) return;
         if (!dirty) return;
 
@@ -1738,10 +1771,7 @@ function isTimeInsideAny(intervals, t) {
   useEffect(() => {
     const onKeyDown = (e) => {
       const tag = (e.target?.tagName || "").toLowerCase();
-      const isTyping =
-        tag === "input" ||
-        tag === "textarea" ||
-        e.target?.isContentEditable;
+      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
 
       if (isTyping) return;
 
@@ -1762,13 +1792,8 @@ function isTimeInsideAny(intervals, t) {
         // ✅ SHIFT = ripple delete
         if (e.shiftKey) {
           rippleDelete(toRemove);
-        } 
-        // ✅ Plain delete = remove only (leave gap)
-        else {
-          setClips((prev) =>
-            prev.filter((c) => !toRemove.includes(c.key))
-          );
-
+        } else {
+          setClips((prev) => prev.filter((c) => !toRemove.includes(c.key)));
           setSelectedClipKeys(new Set());
           setActiveClipKey(null);
         }
@@ -1792,7 +1817,6 @@ function isTimeInsideAny(intervals, t) {
       const len = Math.max(0, out0 - in0);
       if (len <= MIN_LEN * 2) return prev;
 
-      // timelineT must be inside clip bounds
       const local = clamp((Number(timelineT) || 0) - start, 0, len);
       if (local <= MIN_LEN || local >= len - MIN_LEN) return prev;
 
@@ -1809,7 +1833,6 @@ function isTimeInsideAny(intervals, t) {
         key: `${clip.key}-R-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         start: start + local,
         in: splitVideoTime,
-        // out stays out0
       };
 
       const next = [];
@@ -1833,12 +1856,29 @@ function isTimeInsideAny(intervals, t) {
     if (t?.closest?.(".genEditClipX")) return;
     if (t?.closest?.(".genEditTrimHandle")) return;
 
+    // ✅ SLIP MODE: drag inside clip to offset source (in/out) while keeping timeline length
+    if (tool === "slip") {
+      onSlipPointerDown(e, clipKey);
+      return;
+    }
+
     // ✅ RAZOR MODE: click clip to split at mouse time
     if (tool === "razor") {
       const raw = getTimeFromClientX(e.clientX);
       const tt = e.shiftKey ? snapRazorTime(raw) : raw;
-      setRazorHoverT(tt); // keeps the line “locked” to the exact cut momentarily
+      setRazorHoverT(tt);
       splitClipAtTime(clipKey, tt);
+      return;
+    }
+
+    // ✅ RIPPLE TOOL: do NOT start dragging clips around
+    if (tool === "ripple") {
+      if (e.shiftKey) toggleSelectionKey(clipKey);
+      else {
+        const sel = selectedClipKeysRef.current;
+        if (!sel || !sel.has(clipKey)) setSingleSelection(clipKey);
+        else setActiveClipKey(clipKey);
+      }
       return;
     }
 
@@ -1854,10 +1894,6 @@ function isTimeInsideAny(intervals, t) {
     dragOrigTrackRef.current = { kind: clip.kind, track: Number(clip.track) || 0 };
     didMoveClipRef.current = false;
 
-    // Build drag group:
-    // If the clicked clip is in the selection, drag the whole selection.
-    // Otherwise drag just this clip.
-    // Also: only drag clips of the same "kind" (video vs audio) as the primary.
     const sel = selectedClipKeysRef.current;
     const primary = clips.find((c) => c.key === clipKey);
     const groupKeys = sel && sel.has(clipKey) ? Array.from(sel) : [clipKey];
@@ -1874,16 +1910,13 @@ function isTimeInsideAny(intervals, t) {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
 
-    // Selection behavior:
-    // - Shift: toggle selection membership
-    // - No shift: if clip isn't already selected, make it the sole selection
     if (e.shiftKey) {
       toggleSelectionKey(clipKey);
     } else {
-      const sel = selectedClipKeysRef.current;
-      if (!sel || !sel.has(clipKey)) setSingleSelection(clipKey);
+      const sel2 = selectedClipKeysRef.current;
+      if (!sel2 || !sel2.has(clipKey)) setSingleSelection(clipKey);
       else setActiveClipKey(clipKey);
-}
+    }
   }
 
   function onClipPointerMove(e) {
@@ -1905,18 +1938,14 @@ function isTimeInsideAny(intervals, t) {
     const primaryOrig = group.find((g) => g.key === primaryKey) || { start: dragClipStartRef.current, kind: null, track: null };
     const dxSeconds = dxPx / PPS;
 
-    // compute proposed new start for PRIMARY, then derive delta
     let nextPrimaryStart = Math.max(0, Number(primaryOrig.start || 0) + dxSeconds);
 
-    // time snap: shift => whole seconds
     if (e.shiftKey) nextPrimaryStart = Math.max(0, snapSeconds(nextPrimaryStart, 1));
 
-    // edge snap (apply using the primary clip key)
     nextPrimaryStart = snapToEdges(nextPrimaryStart, primaryKey);
 
     const delta = nextPrimaryStart - (Number(primaryOrig.start) || 0);
 
-    // lane change (apply to entire group, Premiere-ish)
     const orig = dragOrigTrackRef.current;
     let nextKind = orig?.kind;
     let nextTrack = orig?.track;
@@ -1928,7 +1957,6 @@ function isTimeInsideAny(intervals, t) {
       if (nextKind === "video") nextTrack = 0;
     }
 
-    // Apply delta to every clip in group
     const groupKeySet = new Set(group.map((g) => g.key));
 
     setClips((prev) =>
@@ -1937,12 +1965,8 @@ function isTimeInsideAny(intervals, t) {
 
         const g = group.find((x) => x.key === c.key);
         const baseStart = Number(g?.start ?? c.start ?? 0);
-
-        // keep group from going negative: clamp each individually
         const movedStart = Math.max(0, baseStart + delta);
 
-        // apply lane change only if same kind as original dragged kind
-        // (we already filtered group to same kind as primary, so this is safe)
         return { ...c, start: movedStart, kind: nextKind, track: nextTrack };
       })
     );
@@ -1966,8 +1990,88 @@ function isTimeInsideAny(intervals, t) {
     } catch {}
   }
 
-  // -------- Trim --------
-    function onTrimPointerDown(e, clipKey, side) {
+  // -------- Slip --------
+  function onSlipPointerDown(e, clipKey) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const clip = clips.find((c) => c.key === clipKey);
+    if (!clip) return;
+
+    const srcDur = Number(clip.sourceDuration || clip?.video?.durationSeconds || 0);
+    const in0 = Number(clip.in) || 0;
+    const out0 = Number(clip.out) || 0;
+    const len = Math.max(0, out0 - in0);
+
+    if (!(srcDur > 0) || !(len > 0.01)) return;
+
+    isSlippingRef.current = true;
+    slipKeyRef.current = clipKey;
+    slipStartClientXRef.current = e.clientX;
+    slipOrigRef.current = { in: in0, out: out0, len, srcDur };
+    slipPointerIdRef.current = e.pointerId;
+
+    setActiveClipKey(clipKey);
+    const sel = selectedClipKeysRef.current;
+    if (!sel || !sel.has(clipKey)) setSingleSelection(clipKey);
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    setSlipTip({
+      x: e.clientX + 12,
+      y: e.clientY + 12,
+      text: `Slip ${fmtTime(in0)} → ${fmtTime(out0)} (Δ +0:00)`,
+    });
+  }
+
+  function onSlipPointerMove(e) {
+    if (!isSlippingRef.current) return;
+    if (slipPointerIdRef.current != null && e.pointerId !== slipPointerIdRef.current) return;
+
+    const key = slipKeyRef.current;
+    const orig = slipOrigRef.current;
+    if (!key || !orig) return;
+
+    const dxSeconds = -(e.clientX - slipStartClientXRef.current) / PPS;
+
+    const nextIn = clampSlipIn(orig.in + dxSeconds, orig.srcDur, orig.len);
+    const nextOut = nextIn + orig.len;
+
+    setClips((prev) =>
+      prev.map((c) => {
+        if (c.key !== key) return c;
+        return { ...c, in: nextIn, out: nextOut };
+      })
+    );
+
+    setSlipTip({
+      x: e.clientX + 12,
+      y: e.clientY + 12,
+      text: `Slip ${fmtTime(nextIn)} → ${fmtTime(nextOut)} (Δ ${fmtSignedSeconds(nextIn - orig.in)})`,
+    });
+  }
+
+  function onSlipPointerUp(e) {
+    if (!isSlippingRef.current) return;
+    if (slipPointerIdRef.current != null && e.pointerId !== slipPointerIdRef.current) return;
+
+    isSlippingRef.current = false;
+    slipKeyRef.current = null;
+    slipStartClientXRef.current = 0;
+    slipOrigRef.current = null;
+    slipPointerIdRef.current = null;
+
+    setSlipTip(null);
+
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+  }
+
+  // -------- Trim / Ripple trim (same handlers; behavior branches on tool) --------
+  function onTrimPointerDown(e, clipKey, side) {
     e.preventDefault();
     e.stopPropagation();
 
@@ -1979,7 +2083,6 @@ function isTimeInsideAny(intervals, t) {
     trimKeyRef.current = clipKey;
     trimStartXRef.current = e.clientX;
 
-    // Snapshot ALL starts in this lane so ripple doesn't compound
     const laneKind = clip.kind;
     const laneTrack = Number(clip.track) || 0;
     const laneStarts = new Map();
@@ -2009,6 +2112,20 @@ function isTimeInsideAny(intervals, t) {
     } catch {}
 
     setActiveClipKey(clipKey);
+
+    // show tooltip immediately
+    setTrimTip({
+      x: e.clientX + 12,
+      y: e.clientY + 12,
+      text: formatTrimTooltip({
+        side,
+        inTime: clip.in,
+        outTime: clip.out,
+        length: clipLen(clip),
+        deltaLength: 0,
+        isRipple: tool === "ripple",
+      }),
+    });
   }
 
   function onTrimPointerMove(e) {
@@ -2036,6 +2153,7 @@ function isTimeInsideAny(intervals, t) {
 
       const oldStart = start0;
       const oldEnd = Number(orig.end || (start0 + (out0 - in0)));
+      const oldLen = Math.max(0, out0 - in0);
 
       let nextPrimary = primary;
 
@@ -2060,11 +2178,27 @@ function isTimeInsideAny(intervals, t) {
         let nextEnd = oldStart + Math.max(0, nextOut - in0);
         const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
 
-        // Convert snapped timeline end back into OUT time
         nextEnd = snappedEnd;
         nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur);
 
         nextPrimary = { ...primary, out: nextOut };
+
+        // Tooltip update
+        const newLen = Math.max(0, nextOut - in0);
+        const deltaLen = newLen - oldLen;
+
+        setTrimTip({
+          x: e.clientX + 12,
+          y: e.clientY + 12,
+          text: formatTrimTooltip({
+            side,
+            inTime: in0,
+            outTime: nextOut,
+            length: newLen,
+            deltaLength: deltaLen,
+            isRipple,
+          }),
+        });
 
         if (isRipple) {
           const newEnd = oldStart + Math.max(0, nextOut - in0);
@@ -2072,25 +2206,18 @@ function isTimeInsideAny(intervals, t) {
           thresholdT = oldEnd;
           affect = "right";
         }
-
       } else {
-          // LEFT trim:
-          // We want the LEFT edge to move (start), not the right edge.
-          // Keep the OUT point the same; move START and IN together so the clip's right edge stays fixed.
-
+        // LEFT trim:
+        if (!isRipple) {
+          // NORMAL left trim: move START and IN together, keeping right edge fixed.
           const laneEdges = getLaneEdgesSeconds(prev, {
             kind: laneKind,
             track: laneTrack,
             excludeKey: key,
           });
 
-          // Current "locked" end on the timeline (keep this fixed for normal left-trim)
-          const lockedEnd = oldEnd;
-
-          // Proposed start shift (timeline seconds)
           let d = dxSeconds;
 
-          // Clamp so we don't go < 0 on timeline, or < 0 in source, or beyond out-MIN
           d = Math.max(d, -start0);
           d = Math.max(d, -in0);
           d = Math.min(d, out0 - MIN_LEN - in0);
@@ -2098,11 +2225,9 @@ function isTimeInsideAny(intervals, t) {
           let nextStart = start0 + d;
           let nextIn = in0 + d;
 
-          // Snap the MOVING EDGE (left edge = nextStart)
           const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
           let dd = snappedStart - start0;
 
-          // Re-clamp after snapping
           dd = Math.max(dd, -start0);
           dd = Math.max(dd, -in0);
           dd = Math.min(dd, out0 - MIN_LEN - in0);
@@ -2110,7 +2235,6 @@ function isTimeInsideAny(intervals, t) {
           nextStart = start0 + dd;
           nextIn = in0 + dd;
 
-          // Optional: shift-snap to whole seconds AFTER magnet snap
           if (e.shiftKey) {
             const s2 = snapSeconds(nextStart, 1);
             let dd2 = s2 - start0;
@@ -2125,13 +2249,105 @@ function isTimeInsideAny(intervals, t) {
 
           nextPrimary = { ...primary, start: nextStart, in: nextIn };
 
-          if (isRipple) {
-            // Ripple left-trim: because we're keeping the right edge fixed, the timeline length doesn't change.
-            // If you want ripple-left to change overall timing, tell me the exact behavior you want
-            // (e.g. keep IN fixed and move OUT, or move clips after, etc).
-            affect = "none";
+          const newLen = Math.max(0, out0 - nextIn);
+          const deltaLen = newLen - oldLen;
+
+          setTrimTip({
+            x: e.clientX + 12,
+            y: e.clientY + 12,
+            text: formatTrimTooltip({
+              side,
+              inTime: nextIn,
+              outTime: out0,
+              length: newLen,
+              deltaLength: deltaLen,
+              isRipple: false,
+            }),
+          });
+
+          affect = "none";
+        } else {
+          /**
+           * ✅ FIX: RIPPLE left-edge trim (backwards)
+           *
+           * You said: “Ripple backwards is causing the selected clip to expand outwards to the right.”
+           * That happens when ripple-left is implemented as changing IN while keeping START fixed,
+           * because the END moves and the clip can lengthen to the right.
+           *
+           * Correct “ripple backwards” behavior here:
+           * - Keep END fixed on the timeline
+           * - Move START and IN together (like normal left-trim)
+           * - Ripple clips BEFORE this clip on the same lane by the START delta
+           *
+           * Result: dragging the left edge NEVER expands the clip to the right.
+           */
+          const laneEdges = getLaneEdgesSeconds(prev, {
+            kind: laneKind,
+            track: laneTrack,
+            excludeKey: key,
+          });
+
+          let d = dxSeconds;
+
+          // Constraints: start >= 0, in >= 0, and length >= MIN_LEN (i.e. out - in >= MIN_LEN)
+          d = Math.max(d, -start0);
+          d = Math.max(d, -in0);
+          d = Math.min(d, out0 - MIN_LEN - in0);
+
+          // Keep END fixed on timeline => end = oldEnd always
+          // With start moving by d, the visible length changes, but end stays oldEnd.
+          // That naturally implies the clip "grows/shrinks from the left" only.
+          let nextStart = start0 + d;
+          let nextIn = in0 + d;
+
+          // Snap the MOVING EDGE (left edge / start) to lane edges
+          const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
+          let dd = snappedStart - start0;
+
+          dd = Math.max(dd, -start0);
+          dd = Math.max(dd, -in0);
+          dd = Math.min(dd, out0 - MIN_LEN - in0);
+
+          nextStart = start0 + dd;
+          nextIn = in0 + dd;
+
+          if (e.shiftKey) {
+            const s2 = snapSeconds(nextStart, 1);
+            let dd2 = s2 - start0;
+
+            dd2 = Math.max(dd2, -start0);
+            dd2 = Math.max(dd2, -in0);
+            dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
+
+            nextStart = start0 + dd2;
+            nextIn = in0 + dd2;
           }
+
+          // Apply primary change (END on timeline remains oldEnd implicitly)
+          nextPrimary = { ...primary, start: nextStart, in: nextIn };
+
+          const newLen = Math.max(0, out0 - nextIn);
+          const deltaLen = newLen - oldLen;
+
+          setTrimTip({
+            x: e.clientX + 12,
+            y: e.clientY + 12,
+            text: formatTrimTooltip({
+              side,
+              inTime: nextIn,
+              outTime: out0,
+              length: newLen,
+              deltaLength: deltaLen,
+              isRipple: true,
+            }),
+          });
+
+          // Ripple BACKWARDS: shift clips BEFORE the original start by the same delta
+          delta = nextStart - oldStart;
+          thresholdT = oldStart;
+          affect = "left";
         }
+      }
 
       // If not ripple, ONLY update the primary clip.
       if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
@@ -2143,25 +2359,23 @@ function isTimeInsideAny(intervals, t) {
       return prev.map((c) => {
         if (!c) return c;
 
-        // primary updated
         if (c.key === key) return nextPrimary;
 
-        // same lane only
         if (c.kind !== laneKind) return c;
         if ((Number(c.track) || 0) !== laneTrack) return c;
 
         const baseStart = Number(laneStarts.get(c.key)) || 0;
 
+        // forward ripple: move clips starting at/after threshold
         if (affect === "right") {
-          // forward ripple: move clips starting at/after threshold
           if (baseStart >= thresholdT - 1e-6) {
             return { ...c, start: Math.max(0, baseStart + delta) };
           }
           return c;
         }
 
+        // backward ripple: move clips strictly BEFORE threshold
         if (affect === "left") {
-          // backward ripple: move clips strictly before threshold
           if (baseStart < thresholdT - 1e-6) {
             return { ...c, start: Math.max(0, baseStart + delta) };
           }
@@ -2181,6 +2395,8 @@ function isTimeInsideAny(intervals, t) {
     trimKeyRef.current = null;
     trimStartXRef.current = 0;
     trimOrigRef.current = null;
+
+    setTrimTip(null);
 
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -2236,7 +2452,6 @@ function isTimeInsideAny(intervals, t) {
 
   // -------- Ruler ticks --------
   const rulerTicks = useMemo(() => {
-    // Match ruler to the actual scroll width (timelineWidth already includes padding)
     const endSeconds = Math.max(10, Math.ceil(timelineWidth / PPS));
     const ticks = [];
     for (let t = 0; t <= endSeconds; t += 1) ticks.push({ t, major: t % 5 === 0 });
@@ -2267,8 +2482,6 @@ function isTimeInsideAny(intervals, t) {
     const v = videoRef.current;
     if (v) v.muted = next;
   }
-
-
 
   function setPlayerVolume(next) {
     const x = clamp(Number(next), 0, 1);
@@ -2314,6 +2527,7 @@ function isTimeInsideAny(intervals, t) {
       if (e.key === "v" || e.key === "V") setTool("select");
       if (e.key === "c" || e.key === "C") setTool("razor");
       if (e.key === "b" || e.key === "B") setTool("ripple");
+      if (e.key === "y" || e.key === "Y") setTool("slip");
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -2363,7 +2577,11 @@ function isTimeInsideAny(intervals, t) {
   }, [isPlaying, viewerSrc, playhead]);
 
   return (
-    <div className={`genEditWrap ${tool === "razor" ? "toolRazor" : "toolSelect"}`}>
+    <div
+      className={`genEditWrap ${
+        tool === "razor" ? "toolRazor" : tool === "slip" ? "toolSlip" : tool === "ripple" ? "toolRipple" : "toolSelect"
+      }`}
+    >
       <GeneratePublishModal
         open={publishOpen}
         onClose={() => setPublishOpen(false)}
@@ -2375,6 +2593,18 @@ function isTimeInsideAny(intervals, t) {
         }}
       />
 
+      {slipTip ? (
+        <div className="genEditSlipTip" style={{ left: slipTip.x, top: slipTip.y }} role="status" aria-live="polite">
+          {slipTip.text}
+        </div>
+      ) : null}
+
+      {trimTip ? (
+        <div className="genEditTrimTip" style={{ left: trimTip.x, top: trimTip.y }} role="status" aria-live="polite">
+          {trimTip.text}
+        </div>
+      ) : null}
+
       <div className="genEditGrid">
         {/* LEFT: Library */}
         <aside className="genEditLibrary">
@@ -2382,10 +2612,18 @@ function isTimeInsideAny(intervals, t) {
             <div className="genEditLibraryTitle">Library</div>
 
             <div className="genEditLibTabs" role="tablist" aria-label="Library type">
-              <button type="button" className={`genEditLibTab ${libTab === "video" ? "active" : ""}`} onClick={() => setLibTab("video")}>
+              <button
+                type="button"
+                className={`genEditLibTab ${libTab === "video" ? "active" : ""}`}
+                onClick={() => setLibTab("video")}
+              >
                 Video
               </button>
-              <button type="button" className={`genEditLibTab ${libTab === "audio" ? "active" : ""}`} onClick={() => setLibTab("audio")}>
+              <button
+                type="button"
+                className={`genEditLibTab ${libTab === "audio" ? "active" : ""}`}
+                onClick={() => setLibTab("audio")}
+              >
                 Audio
               </button>
             </div>
@@ -2597,15 +2835,14 @@ function isTimeInsideAny(intervals, t) {
               <button type="button" className={`genEditToolBtn ${tool === "razor" ? "active" : ""}`} onClick={() => setTool("razor")} title="Razor (C)">
                 ✂
               </button>
-              <button
-                type="button"
-                className={`genEditToolBtn ${tool === "ripple" ? "active" : ""}`}
-                onClick={() => setTool("ripple")}
-                title="Ripple Edit (B)"
-              >
+              <button type="button" className={`genEditToolBtn ${tool === "ripple" ? "active" : ""}`} onClick={() => setTool("ripple")} title="Ripple Edit (B)">
                 ↔
               </button>
+              <button type="button" className={`genEditToolBtn ${tool === "slip" ? "active" : ""}`} onClick={() => setTool("slip")} title="Slip Tool (Y)">
+                ⇆
+              </button>
             </div>
+
             <div className="genEditZoomLabel">
               <span className="muted">Zoom</span> <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
             </div>
@@ -2656,7 +2893,6 @@ function isTimeInsideAny(intervals, t) {
                     <div className="genEditGutterCellInner">
                       <span>{lane.label}</span>
 
-                      {/* subtle delete ✕ for A2+ */}
                       {lane.track > 0 ? (
                         <button
                           type="button"
@@ -2688,7 +2924,7 @@ function isTimeInsideAny(intervals, t) {
                   disabled={audioLaneCount >= 5}
                   title={audioLaneCount >= 5 ? "Max 5 audio lanes" : "Add audio lane"}
                 >
-                  ＋ 
+                  ＋
                 </button>
               </div>
 
@@ -2700,8 +2936,12 @@ function isTimeInsideAny(intervals, t) {
                     ref={timelineOriginRef}
                     className="genEditTimeStack"
                     style={{ width: timelineWidth }}
-                    onPointerMove={onTimelinePointerMove}
-                    onPointerLeave={onTimelinePointerLeave}
+                    onPointerMove={(e) => {
+                      onTimelinePointerMove(e);
+                    }}
+                    onPointerLeave={() => {
+                      onTimelinePointerLeave();
+                    }}
                     onDragOver={onTimelineDragOver}
                     onDrop={onTimelineDrop}
                     role="presentation"
@@ -2723,9 +2963,9 @@ function isTimeInsideAny(intervals, t) {
                     </div>
 
                     {/* Razor preview line spans whole stack */}
-                    {tool === "razor" && razorHoverT != null && <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} />}
-                    
-                    {boxSel && (
+                    {tool === "razor" && razorHoverT != null ? <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} /> : null}
+
+                    {boxSel ? (
                       <div
                         className="genEditBoxSelect"
                         style={{
@@ -2735,7 +2975,7 @@ function isTimeInsideAny(intervals, t) {
                           height: `${boxSel.height}px`,
                         }}
                       />
-                    )}
+                    ) : null}
 
                     {/* Playhead spans whole stack; handle is visually in the header */}
                     <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
@@ -2751,8 +2991,8 @@ function isTimeInsideAny(intervals, t) {
                       tabIndex={0}
                     />
 
-                    {/* Lanes (no click-to-set playhead here anymore) */}
-                    <div className="genEditTimeOrigin" onPointerDown={onLanesPointerDown}>
+                    {/* Lanes */}
+                    <div className="genEditTimeOrigin" onPointerDown={onLanesPointerDown} onMouseDown={onTimelineBackgroundPointerDown}>
                       <div className="genEditLanes">
                         {LANES.map((lane) => {
                           const laneClips = clipsForLane(lane.kind, lane.track);
@@ -2773,30 +3013,20 @@ function isTimeInsideAny(intervals, t) {
                                   const isBoxHot = boxHoverKeys.has(c.key);
 
                                   return (
-                                    
                                     <div
-                                        key={c.key}
-                                        className={[
-                                          "genEditClip",
-                                          c.kind,
-                                          isSelected ? "selected active" : "",
-                                          isBoxHot ? "boxHot" : "",
-                                        ].join(" ")}
-                                        data-clip-key={c.key}
-                                        style={{ left: `${left}px`, width: `${width}px` }}
-                                        onPointerDown={(e) => onClipPointerDown(e, c.key)}
-                                        onPointerMove={onClipPointerMove}
-                                        onPointerUp={onClipPointerUp}
-                                        onPointerCancel={onClipPointerUp}
-                                        onMouseDown={(e) => e.stopPropagation()}
-                                        // ✅ No onClick selection — pointerdown already handles select + shift-multiselect
-                                        onClick={(e) => {
-                                          // Optional: prevent bubbling to any future background click handlers
-                                          e.stopPropagation();
-                                        }}
-                                        role="button"
-                                        tabIndex={0}
-                                      >
+                                      key={c.key}
+                                      className={["genEditClip", c.kind, isSelected ? "selected active" : "", isBoxHot ? "boxHot" : ""].join(" ")}
+                                      data-clip-key={c.key}
+                                      style={{ left: `${left}px`, width: `${width}px` }}
+                                      onPointerDown={(e) => onClipPointerDown(e, c.key)}
+                                      onPointerMove={tool === "slip" ? onSlipPointerMove : onClipPointerMove}
+                                      onPointerUp={tool === "slip" ? onSlipPointerUp : onClipPointerUp}
+                                      onPointerCancel={tool === "slip" ? onSlipPointerUp : onClipPointerUp}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => e.stopPropagation()}
+                                      role="button"
+                                      tabIndex={0}
+                                    >
                                       <div
                                         className="genEditTrimHandle left"
                                         onPointerDown={(e) => onTrimPointerDown(e, c.key, "l")}
@@ -2823,7 +3053,9 @@ function isTimeInsideAny(intervals, t) {
                                           onClick={(e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
-                                            removeFromTimeline(c.key);
+
+                                            if (e.shiftKey) rippleDelete([c.key]);
+                                            else removeFromTimeline([c.key]);
                                           }}
                                           aria-label="Remove clip"
                                           title="Remove clip"
@@ -2839,7 +3071,7 @@ function isTimeInsideAny(intervals, t) {
                           );
                         })}
 
-                        {!clips.length && <div className="genEditTimelineEmpty">Drag clips from your library onto the timeline.</div>}
+                        {!clips.length ? <div className="genEditTimelineEmpty">Drag clips from your library onto the timeline.</div> : null}
                       </div>
                     </div>
                   </div>
