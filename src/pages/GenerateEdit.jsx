@@ -208,7 +208,7 @@ export default function GenerateEdit({ user }) {
   const prevPpsRef = useRef(pps);
 
   // Tooling
-  const [tool, setTool] = useState("select"); // "select" | "razor"
+  const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
   const RAZOR_SNAP_SEC = 0.25;
 
@@ -738,6 +738,34 @@ export default function GenerateEdit({ user }) {
     return candidates[0];
   }
 
+  function clipEnd(c) {
+  return (Number(c.start) || 0) + clipLen(c);
+}
+
+function getLaneEdgesSeconds(allClips, { kind, track, excludeKey }) {
+  const edges = [];
+  for (const c of allClips) {
+    if (!c) continue;
+    if (c.key === excludeKey) continue;
+    if (c.kind !== kind) continue;
+    if ((Number(c.track) || 0) !== (Number(track) || 0)) continue;
+
+    edges.push(Number(c.start) || 0);
+    edges.push(clipEnd(c));
+  }
+  return edges;
+}
+
+function snapToNearest(t, targets, snapSec) {
+  const tt = Number(t) || 0;
+  let best = { v: tt, d: Infinity };
+  for (const x of targets || []) {
+    const d = Math.abs(tt - x);
+    if (d < best.d) best = { v: x, d };
+  }
+  return best.d <= (Number(snapSec) || 0) ? best.v : tt;
+}
+
   function findNextVideoStart(afterT, excludeKey = null) {
     const t = Number(afterT) || 0;
     const EPS = 1e-6; // allow equality (butt-join)
@@ -784,14 +812,12 @@ export default function GenerateEdit({ user }) {
 
   // ✅ Measure time from time-origin surface (time stack)
   function getTimeFromClientX(clientX) {
-    const origin = timelineOriginRef.current;
-    if (!origin) return 0;
-
-    const rect = origin.getBoundingClientRect();
     const viewport = timelineViewportRef.current;
-    const scrollLeft = viewport ? viewport.scrollLeft : 0;
+    if (!viewport) return 0;
 
-    const x = clientX - rect.left + scrollLeft;
+    const vr = viewport.getBoundingClientRect();
+    const x = clientX - vr.left + viewport.scrollLeft;
+
     return Math.max(0, x / PPS);
   }
 
@@ -811,6 +837,89 @@ export default function GenerateEdit({ user }) {
     }
     return null;
   }
+
+  // ---------- Ripple delete helpers ----------
+function laneKeyOf(c) {
+  return `${c?.kind}:${Number(c?.track) || 0}`;
+}
+
+function buildRipplePlan(prevClips, keysToRemove) {
+  const removeSet = new Set(keysToRemove || []);
+  const removedByLane = new Map();
+
+  // Collect removed intervals per lane
+  for (const c of prevClips) {
+    if (!c || !removeSet.has(c.key)) continue;
+    const lk = laneKeyOf(c);
+    const s = Number(c.start) || 0;
+    const e = s + clipLen(c);
+    if (e <= s) continue;
+
+    if (!removedByLane.has(lk)) removedByLane.set(lk, []);
+    removedByLane.get(lk).push({ start: s, end: e, len: e - s });
+  }
+
+  // Normalize: sort + merge overlaps (so multiple deletions don't double-shift)
+  const planByLane = new Map();
+  for (const [lk, intervals] of removedByLane.entries()) {
+    const sorted = intervals
+      .slice()
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+
+    const merged = [];
+    for (const it of sorted) {
+      const last = merged[merged.length - 1];
+      if (!last) merged.push({ ...it });
+      else if (it.start <= last.end + 1e-6) {
+        // overlap/abut -> merge
+        last.end = Math.max(last.end, it.end);
+        last.len = last.end - last.start;
+      } else {
+        merged.push({ ...it });
+      }
+    }
+
+    // Precompute cumulative shifts for fast lookup
+    let cum = 0;
+    const steps = merged.map((m) => {
+      const step = { ...m, shiftAfter: cum + m.len };
+      cum += m.len;
+      return step;
+    });
+
+    planByLane.set(lk, { intervals: steps, total: cum });
+  }
+
+  return { removeSet, planByLane };
+}
+
+function rippleShiftForTime(intervals, t) {
+  // intervals are merged, in ascending time, with "shiftAfter" cumulative included
+  const tt = Number(t) || 0;
+  let shift = 0;
+
+  for (const it of intervals) {
+    // If time is after this interval, accumulate its length
+    if (tt >= it.end - 1e-6) {
+      shift = it.shiftAfter;
+      continue;
+    }
+    // If time is inside this interval, we do NOT shift it "past" the interval;
+    // caller decides snapping behavior.
+    break;
+  }
+
+  return shift;
+}
+
+function isTimeInsideAny(intervals, t) {
+  const tt = Number(t) || 0;
+  for (const it of intervals) {
+    if (tt >= it.start - 1e-6 && tt <= it.end + 1e-6) return it;
+    if (tt < it.start) break;
+  }
+  return null;
+}
 
   function snapToEdges(nextStart, movingKey) {
     const moving = clips.find((c) => c.key === movingKey);
@@ -1522,49 +1631,118 @@ export default function GenerateEdit({ user }) {
   }
 
   function removeFromTimeline(key) {
-    setClips((t) => t.filter((x) => x.key !== key));
-    if (activeClipKey === key) setActiveClipKey(null);
-
-    if (loadedClipKeyRef.current === key) {
-      loadedClipKeyRef.current = null;
-      loadedSrcRef.current = "";
-      ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: wantedPlayRef.current }).finally(() => {
-        if (wantedPlayRef.current) forceResume("removeClip");
-      });
-    }
+    rippleDelete([key]);
   }
 
-  // Ctrl/Cmd + S = Save
-useEffect(() => {
-  const onKeyDown = (e) => {
-    const key = (e.key || "").toLowerCase();
+  function rippleDelete(keysToRemove) {
+  const keys = Array.from(keysToRemove || []);
+  if (!keys.length) return;
 
-    // Ctrl+S (Windows/Linux) or Cmd+S (Mac)
-    if ((e.ctrlKey || e.metaKey) && key === "s") {
-      e.preventDefault();
+  // If we are deleting the currently-loaded clip, force a reload afterwards
+  const removingLoaded = keys.includes(loadedClipKeyRef.current);
 
-      // Optional: don’t save if you're typing in an input/textarea
-      const tag = (e.target?.tagName || "").toLowerCase();
-      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
-      if (isTyping) return;
+  setClips((prev) => {
+    const { removeSet, planByLane } = buildRipplePlan(prev, keys);
 
-      // Avoid spam / no-op
-      if (isSaving) return;
-      if (!dirty) return;
+    // First delete
+    const kept = prev.filter((c) => c && !removeSet.has(c.key));
 
-      saveProjectNow();
+    // Then shift clips per lane
+    const next = kept.map((c) => {
+      const lk = laneKeyOf(c);
+      const plan = planByLane.get(lk);
+      if (!plan || !plan.total) return c;
+
+      const s = Number(c.start) || 0;
+      const shift = rippleShiftForTime(plan.intervals, s);
+      if (shift <= 0) return c;
+
+      return { ...c, start: Math.max(0, s - shift) };
+    });
+
+    return next;
+  });
+
+  // Selection cleanup (caller can do too, but safe here)
+  setSelectedClipKeys(new Set());
+  setActiveClipKey(null);
+
+  // Adjust playhead after the state update lands
+  requestAnimationFrame(() => {
+    const t0 = playheadRef.current ?? playhead;
+
+    // Compute playhead shift based on the lane it currently sits on:
+    // We don't have a "playhead lane", so we ripple playhead based on VIDEO lane.
+    // (This matches typical editors where the timebase is the main video track.)
+    // If you want it based on active clip lane instead, I can swap this logic.
+    const videoLaneKey = "video:0";
+    const plan = buildRipplePlan(clips, keys).planByLane.get(videoLaneKey);
+
+    let t1 = t0;
+
+    if (plan && plan.total) {
+      const inside = isTimeInsideAny(plan.intervals, t0);
+
+      if (inside) {
+        // Snap to start of removed region, then apply any previous intervals shift
+        const priorShift = rippleShiftForTime(plan.intervals, inside.start);
+        t1 = Math.max(0, inside.start - priorShift);
+      } else {
+        const shift = rippleShiftForTime(plan.intervals, t0);
+        t1 = Math.max(0, t0 - shift);
+      }
     }
-  };
 
-  window.addEventListener("keydown", onKeyDown);
-  return () => window.removeEventListener("keydown", onKeyDown);
-}, [dirty, isSaving, saveProjectNow]);
+    setPlayhead(t1);
+    playheadRef.current = t1;
 
-  // Delete / Backspace removes selected clip
+    // If we deleted the loaded clip, force the viewer to re-align
+    if (removingLoaded) {
+      loadedClipKeyRef.current = null;
+      loadedSrcRef.current = "";
+    }
+
+    ensureLoadedForTimelineTime(t1, { autoplay: wantedPlayRef.current }).finally(() => {
+      if (wantedPlayRef.current) forceResume("rippleDelete");
+    });
+  });
+}
+
+  // Ctrl/Cmd + S = Save
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const key = (e.key || "").toLowerCase();
+
+      // Ctrl+S (Windows/Linux) or Cmd+S (Mac)
+      if ((e.ctrlKey || e.metaKey) && key === "s") {
+        e.preventDefault();
+
+        // Optional: don’t save if you're typing in an input/textarea
+        const tag = (e.target?.tagName || "").toLowerCase();
+        const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+        if (isTyping) return;
+
+        // Avoid spam / no-op
+        if (isSaving) return;
+        if (!dirty) return;
+
+        saveProjectNow();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [dirty, isSaving, saveProjectNow]);
+
+  // Delete / Backspace handling
   useEffect(() => {
     const onKeyDown = (e) => {
       const tag = (e.target?.tagName || "").toLowerCase();
-      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      const isTyping =
+        tag === "input" ||
+        tag === "textarea" ||
+        e.target?.isContentEditable;
+
       if (isTyping) return;
 
       if (e.key === "Escape") {
@@ -1577,29 +1755,28 @@ useEffect(() => {
         const fallback = activeClipKey ? [activeClipKey] : [];
         const toRemove = keys.length ? keys : fallback;
 
-        if (toRemove.length) {
-          e.preventDefault();
-          setClips((prev) => prev.filter((c) => !toRemove.includes(c.key)));
+        if (!toRemove.length) return;
 
-          // cleanup selection/active
+        e.preventDefault();
+
+        // ✅ SHIFT = ripple delete
+        if (e.shiftKey) {
+          rippleDelete(toRemove);
+        } 
+        // ✅ Plain delete = remove only (leave gap)
+        else {
+          setClips((prev) =>
+            prev.filter((c) => !toRemove.includes(c.key))
+          );
+
           setSelectedClipKeys(new Set());
           setActiveClipKey(null);
-
-          // if we removed loaded clip, re-align viewer
-          if (toRemove.includes(loadedClipKeyRef.current)) {
-            loadedClipKeyRef.current = null;
-            loadedSrcRef.current = "";
-            ensureLoadedForTimelineTime(playheadRef.current ?? playhead, { autoplay: wantedPlayRef.current }).finally(() => {
-              if (wantedPlayRef.current) forceResume("removeClip");
-            });
-          }
         }
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClipKey]);
 
   // -------- Clip drag (shift snap) / Razor split --------
@@ -1790,7 +1967,7 @@ useEffect(() => {
   }
 
   // -------- Trim --------
-  function onTrimPointerDown(e, clipKey, side) {
+    function onTrimPointerDown(e, clipKey, side) {
     e.preventDefault();
     e.stopPropagation();
 
@@ -1801,11 +1978,30 @@ useEffect(() => {
     trimSideRef.current = side;
     trimKeyRef.current = clipKey;
     trimStartXRef.current = e.clientX;
+
+    // Snapshot ALL starts in this lane so ripple doesn't compound
+    const laneKind = clip.kind;
+    const laneTrack = Number(clip.track) || 0;
+    const laneStarts = new Map();
+    for (const c of clips) {
+      if (!c) continue;
+      if (c.kind !== laneKind) continue;
+      if ((Number(c.track) || 0) !== laneTrack) continue;
+      laneStarts.set(c.key, Number(c.start) || 0);
+    }
+
+    const start0 = Number(clip.start) || 0;
+    const end0 = start0 + clipLen(clip);
+
     trimOrigRef.current = {
-      start: Number(clip.start) || 0,
+      start: start0,
       in: Number(clip.in) || 0,
       out: Number(clip.out) || 0,
       sourceDuration: Number(clip.sourceDuration) || 0,
+      kind: laneKind,
+      track: laneTrack,
+      end: end0,
+      laneStarts,
     };
 
     try {
@@ -1824,47 +2020,157 @@ useEffect(() => {
     if (!key || !side || !orig) return;
 
     const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
+    const isRipple = tool === "ripple";
 
-    setClips((prev) =>
-      prev.map((c) => {
-        if (c.key !== key) return c;
+    setClips((prev) => {
+      const primary = prev.find((c) => c.key === key);
+      if (!primary) return prev;
 
-        const srcDur = Number(c.sourceDuration || orig.sourceDuration || 0);
-        const in0 = Number(orig.in || 0);
-        const out0 = Number(orig.out || 0);
-        const start0 = Number(orig.start || 0);
+      const laneKind = orig.kind;
+      const laneTrack = Number(orig.track) || 0;
 
-        if (side === "r") {
-          let nextOut = out0 + dxSeconds;
-          if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
-          nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur);
-          return { ...c, out: nextOut };
+      const srcDur = Number(primary.sourceDuration || orig.sourceDuration || 0);
+      const start0 = Number(orig.start || 0);
+      const in0 = Number(orig.in || 0);
+      const out0 = Number(orig.out || 0);
+
+      const oldStart = start0;
+      const oldEnd = Number(orig.end || (start0 + (out0 - in0)));
+
+      let nextPrimary = primary;
+
+      // Ripple shifting info
+      let delta = 0;
+      let thresholdT = null;
+      let affect = "none"; // "right" | "left" | "none"
+
+      if (side === "r") {
+        // RIGHT trim: changes OUT, which moves the end edge on the timeline
+        let nextOut = out0 + dxSeconds;
+        if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
+        nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur);
+
+        // Snap the MOVING EDGE (right edge on timeline)
+        const laneEdges = getLaneEdgesSeconds(prev, {
+          kind: laneKind,
+          track: laneTrack,
+          excludeKey: key,
+        });
+
+        let nextEnd = oldStart + Math.max(0, nextOut - in0);
+        const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
+
+        // Convert snapped timeline end back into OUT time
+        nextEnd = snappedEnd;
+        nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur);
+
+        nextPrimary = { ...primary, out: nextOut };
+
+        if (isRipple) {
+          const newEnd = oldStart + Math.max(0, nextOut - in0);
+          delta = newEnd - oldEnd;
+          thresholdT = oldEnd;
+          affect = "right";
         }
 
-        let delta = dxSeconds;
-        delta = Math.max(delta, -start0);
-        delta = Math.max(delta, -in0);
-        delta = Math.min(delta, out0 - MIN_LEN - in0);
+      } else {
+          // LEFT trim:
+          // We want the LEFT edge to move (start), not the right edge.
+          // Keep the OUT point the same; move START and IN together so the clip's right edge stays fixed.
 
-        let nextStart = start0 + delta;
-        let nextIn = in0 + delta;
+          const laneEdges = getLaneEdgesSeconds(prev, {
+            kind: laneKind,
+            track: laneTrack,
+            excludeKey: key,
+          });
 
-        if (e.shiftKey) {
-          const snappedStart = snapSeconds(nextStart, 1);
-          const snapDelta = snappedStart - start0;
+          // Current "locked" end on the timeline (keep this fixed for normal left-trim)
+          const lockedEnd = oldEnd;
 
-          let d = snapDelta;
+          // Proposed start shift (timeline seconds)
+          let d = dxSeconds;
+
+          // Clamp so we don't go < 0 on timeline, or < 0 in source, or beyond out-MIN
           d = Math.max(d, -start0);
           d = Math.max(d, -in0);
           d = Math.min(d, out0 - MIN_LEN - in0);
 
-          nextStart = start0 + d;
-          nextIn = in0 + d;
+          let nextStart = start0 + d;
+          let nextIn = in0 + d;
+
+          // Snap the MOVING EDGE (left edge = nextStart)
+          const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
+          let dd = snappedStart - start0;
+
+          // Re-clamp after snapping
+          dd = Math.max(dd, -start0);
+          dd = Math.max(dd, -in0);
+          dd = Math.min(dd, out0 - MIN_LEN - in0);
+
+          nextStart = start0 + dd;
+          nextIn = in0 + dd;
+
+          // Optional: shift-snap to whole seconds AFTER magnet snap
+          if (e.shiftKey) {
+            const s2 = snapSeconds(nextStart, 1);
+            let dd2 = s2 - start0;
+
+            dd2 = Math.max(dd2, -start0);
+            dd2 = Math.max(dd2, -in0);
+            dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
+
+            nextStart = start0 + dd2;
+            nextIn = in0 + dd2;
+          }
+
+          nextPrimary = { ...primary, start: nextStart, in: nextIn };
+
+          if (isRipple) {
+            // Ripple left-trim: because we're keeping the right edge fixed, the timeline length doesn't change.
+            // If you want ripple-left to change overall timing, tell me the exact behavior you want
+            // (e.g. keep IN fixed and move OUT, or move clips after, etc).
+            affect = "none";
+          }
         }
 
-        return { ...c, start: nextStart, in: nextIn };
-      })
-    );
+      // If not ripple, ONLY update the primary clip.
+      if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
+        return prev.map((c) => (c.key === key ? nextPrimary : c));
+      }
+
+      const laneStarts = orig.laneStarts || new Map();
+
+      return prev.map((c) => {
+        if (!c) return c;
+
+        // primary updated
+        if (c.key === key) return nextPrimary;
+
+        // same lane only
+        if (c.kind !== laneKind) return c;
+        if ((Number(c.track) || 0) !== laneTrack) return c;
+
+        const baseStart = Number(laneStarts.get(c.key)) || 0;
+
+        if (affect === "right") {
+          // forward ripple: move clips starting at/after threshold
+          if (baseStart >= thresholdT - 1e-6) {
+            return { ...c, start: Math.max(0, baseStart + delta) };
+          }
+          return c;
+        }
+
+        if (affect === "left") {
+          // backward ripple: move clips strictly before threshold
+          if (baseStart < thresholdT - 1e-6) {
+            return { ...c, start: Math.max(0, baseStart + delta) };
+          }
+          return c;
+        }
+
+        return c;
+      });
+    });
   }
 
   function onTrimPointerUp(e) {
@@ -2007,6 +2313,7 @@ useEffect(() => {
 
       if (e.key === "v" || e.key === "V") setTool("select");
       if (e.key === "c" || e.key === "C") setTool("razor");
+      if (e.key === "b" || e.key === "B") setTool("ripple");
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -2287,9 +2594,16 @@ useEffect(() => {
               <button type="button" className={`genEditToolBtn ${tool === "select" ? "active" : ""}`} onClick={() => setTool("select")} title="Select (V)">
                 🖱
               </button>
-
               <button type="button" className={`genEditToolBtn ${tool === "razor" ? "active" : ""}`} onClick={() => setTool("razor")} title="Razor (C)">
                 ✂
+              </button>
+              <button
+                type="button"
+                className={`genEditToolBtn ${tool === "ripple" ? "active" : ""}`}
+                onClick={() => setTool("ripple")}
+                title="Ripple Edit (B)"
+              >
+                ↔
               </button>
             </div>
             <div className="genEditZoomLabel">
