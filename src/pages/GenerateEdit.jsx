@@ -31,6 +31,13 @@ function loadProjectIndex() {
   return Array.isArray(arr) ? arr : [];
 }
 
+function getIndexedProjectTitle(id) {
+  const idx = loadProjectIndex();
+  const hit = idx.find((x) => String(x?.id) === String(id));
+  const t = String(hit?.sequenceTitle || "").trim();
+  return t || "";
+}
+
 function saveProjectIndex(arr) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(PROJECTS_INDEX_LS_KEY, JSON.stringify(arr));
@@ -209,13 +216,23 @@ export default function GenerateEdit({ user }) {
   const [libDurMap, setLibDurMap] = useState(() => new Map());
 
   // Tracks
-  const VIDEO_TRACKS = [{ kind: "video", track: 0, label: "V1" }];
-  const AUDIO_TRACKS = [
-    { kind: "audio", track: 0, label: "A1" },
-    { kind: "audio", track: 1, label: "A2" },
-    { kind: "audio", track: 2, label: "A3" },
-  ];
-  const LANES = [...VIDEO_TRACKS, ...AUDIO_TRACKS];
+  const VIDEO_TRACKS = useMemo(() => [{ kind: "video", track: 0, label: "V1" }], []);
+
+  // dynamic audio lanes (A1..A5)
+  const [audioLaneCount, setAudioLaneCount] = useState(1); // start with just A1
+
+  const AUDIO_TRACKS = useMemo(() => {
+    const n = clamp(Number(audioLaneCount) || 1, 1, 5);
+    return Array.from({ length: n }, (_, i) => ({
+      kind: "audio",
+      track: i,
+      label: `A${i + 1}`,
+    }));
+  }, [audioLaneCount]);
+
+  const LANES = useMemo(() => [...VIDEO_TRACKS, ...AUDIO_TRACKS], [VIDEO_TRACKS, AUDIO_TRACKS]);
+
+
 
   // -------- Route -> ensure project id exists --------
   useEffect(() => {
@@ -252,21 +269,50 @@ export default function GenerateEdit({ user }) {
         });
 
       setClips(migrated);
-      setPlayhead(Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0);
-    } else {
-      const initial = {
-        id: projectId,
-        sequenceTitle: "Timeline",
-        updatedAt: Date.now(),
-        playhead: 0,
-        clips: [],
-      };
-      saveProjectById(projectId, initial);
 
-      const idx = loadProjectIndex();
-      const nextIdx = [{ id: projectId, sequenceTitle: "Timeline", updatedAt: initial.updatedAt }, ...idx.filter((x) => x?.id !== projectId)];
-      saveProjectIndex(nextIdx);
-    }
+      // auto-size audio lanes to fit existing audio clips (cap 5)
+      const maxAudioTrack = migrated
+        .filter((c) => c?.kind === "audio")
+        .reduce((m, c) => Math.max(m, Number(c.track) || 0), 0);
+
+      setAudioLaneCount(clamp(maxAudioTrack + 1, 1, 5));
+
+      // ✅ Prefer saved lane count (keeps empty lanes), fallback to fit existing audio clips
+      const savedLaneCount = Number(p.audioLaneCount);
+      if (Number.isFinite(savedLaneCount) && savedLaneCount > 0) {
+        setAudioLaneCount(clamp(savedLaneCount, 1, 5));
+      } else {
+        const maxAudioTrack = migrated
+          .filter((c) => c?.kind === "audio")
+          .reduce((m, c) => Math.max(m, Number(c.track) || 0), 0);
+        setAudioLaneCount(clamp(maxAudioTrack + 1, 1, 5));
+      }
+
+      setPlayhead(Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0);
+      } else {
+    const indexedTitle = getIndexedProjectTitle(projectId);
+
+    const initialTitle = indexedTitle || "Timeline";
+    setSequenceTitle(initialTitle);
+
+    const initial = {
+      id: projectId,
+      sequenceTitle: initialTitle,
+      updatedAt: Date.now(),
+      playhead: 0,
+      clips: [],
+      audioLaneCount: 1,
+    };
+
+    saveProjectById(projectId, initial);
+
+    const idx = loadProjectIndex();
+    const nextIdx = [
+      { id: projectId, sequenceTitle: initialTitle, updatedAt: initial.updatedAt },
+      ...idx.filter((x) => x?.id !== projectId),
+    ];
+    saveProjectIndex(nextIdx);
+  }
 
     // Reset viewer bookkeeping on load
     loadedClipKeyRef.current = null;
@@ -309,6 +355,33 @@ export default function GenerateEdit({ user }) {
     const arr = Array.from(keys || []);
     if (arr.length) setActiveClipKey(arr[arr.length - 1]);
     else if (!additive) setActiveClipKey(null);
+  }
+
+
+  function addAudioLane() {
+    setAudioLaneCount((n) => clamp((Number(n) || 1) + 1, 1, 5));
+  }
+
+  function removeAudioLane(trackToRemove) {
+    // Protect A1 (track 0) so you never end up with 0 audio lanes
+    if (Number(trackToRemove) === 0) return;
+
+    setClips((prev) => {
+      const t = Number(trackToRemove);
+
+      // 1) delete clips that are on the removed lane
+      // 2) shift any clips above it down by 1 (A4 -> A3, etc)
+      return prev
+        .filter((c) => !(c?.kind === "audio" && Number(c.track) === t))
+        .map((c) => {
+          if (c?.kind !== "audio") return c;
+          const tr = Number(c.track) || 0;
+          if (tr > t) return { ...c, track: tr - 1 };
+          return c;
+        });
+    });
+
+    setAudioLaneCount((n) => clamp((Number(n) || 1) - 1, 1, 5));
   }
 
   function onLanesPointerDown(e) {
@@ -477,6 +550,7 @@ export default function GenerateEdit({ user }) {
         updatedAt: Date.now(),
         playhead: Number(playhead || 0),
         clips: Array.isArray(clips) ? clips : [],
+        audioLaneCount: clamp(Number(audioLaneCount) || 1, 1, 5),
       };
 
       saveProjectById(projectId, payload);
@@ -621,6 +695,34 @@ export default function GenerateEdit({ user }) {
 
   const timelineWidth = Math.max(600, Math.ceil((timelineEnd + 5) * PPS));
   const playheadMax = Math.max(0, Math.ceil(timelineEnd));
+
+  const prevTimelineWidthRef = useRef(timelineWidth);
+
+  useEffect(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    const prevW = prevTimelineWidthRef.current;
+
+    // Only intervene when the content got smaller
+    if (timelineWidth < prevW - 1) {
+      requestAnimationFrame(() => {
+        const maxScroll = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+
+        // If we were scrolled past the new end, clamp
+        if (viewport.scrollLeft > maxScroll) viewport.scrollLeft = maxScroll;
+
+        // Optional (nice): keep playhead comfortably in view
+        const px = (playheadRef.current ?? playhead) * PPS;
+        const desired = Math.max(0, px - viewport.clientWidth * 0.35);
+        viewport.scrollLeft = Math.min(maxScroll, desired);
+      });
+    }
+
+    prevTimelineWidthRef.current = timelineWidth;
+  }, [timelineWidth, PPS, playhead]);
+
+  
 
   function clipCoversTime(c, t) {
     const s = Number(c.start) || 0;
@@ -1828,11 +1930,12 @@ useEffect(() => {
 
   // -------- Ruler ticks --------
   const rulerTicks = useMemo(() => {
-    const end = Math.max(10, Math.ceil(timelineEnd + 1));
+    // Match ruler to the actual scroll width (timelineWidth already includes padding)
+    const endSeconds = Math.max(10, Math.ceil(timelineWidth / PPS));
     const ticks = [];
-    for (let t = 0; t <= end; t += 1) ticks.push({ t, major: t % 5 === 0 });
+    for (let t = 0; t <= endSeconds; t += 1) ticks.push({ t, major: t % 5 === 0 });
     return ticks;
-  }, [timelineEnd]);
+  }, [timelineWidth, PPS]);
 
   // -------- Publish modal timeline payload (VIDEOS ONLY for now) --------
   const publishTimeline = useMemo(() => {
@@ -2223,11 +2326,56 @@ useEffect(() => {
               {/* Fixed gutter labels */}
               <div className="genEditLaneGutter" aria-hidden="true">
                 <div className="genEditGutterSpacer" />
-                {LANES.map((lane) => (
+
+                {/* V1 */}
+                {VIDEO_TRACKS.map((lane) => (
                   <div key={`${lane.kind}-${lane.track}`} className={`genEditGutterCell ${lane.kind}`}>
-                    {lane.label}
+                    <div className="genEditGutterCellInner">
+                      <span>{lane.label}</span>
+                    </div>
                   </div>
                 ))}
+
+                {/* A lanes */}
+                {AUDIO_TRACKS.map((lane) => (
+                  <div key={`${lane.kind}-${lane.track}`} className={`genEditGutterCell ${lane.kind}`}>
+                    <div className="genEditGutterCellInner">
+                      <span>{lane.label}</span>
+
+                      {/* subtle delete ✕ for A2+ */}
+                      {lane.track > 0 ? (
+                        <button
+                          type="button"
+                          className="genEditLaneDelBtn"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeAudioLane(lane.track);
+                          }}
+                          title={`Remove ${lane.label}`}
+                          aria-label={`Remove ${lane.label}`}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Add audio row */}
+                <button
+                  type="button"
+                  className="genEditAddLaneBtn"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addAudioLane();
+                  }}
+                  disabled={audioLaneCount >= 5}
+                  title={audioLaneCount >= 5 ? "Max 5 audio lanes" : "Add audio lane"}
+                >
+                  ＋ 
+                </button>
               </div>
 
               {/* Scrollable time area */}
