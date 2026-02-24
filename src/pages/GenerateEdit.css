@@ -652,10 +652,12 @@
 .genEditZoomLabel{
   min-width: 140px;
   font-size: 12px;
+  margin-left: 50px;
 }
 
 .genEditZoomSlider{
-  flex: 1;
+  display:flex;
+  margin-right: 50px;
   
 }
 
@@ -1040,3 +1042,46 @@
   backdrop-filter: blur(8px);
   transform: translateZ(0);
 }
+
+/* Zoom label + slider become one tight unit */
+.genEditZoomGroup{
+  display: flex;
+  align-items: center;
+  gap: 0px; /* bring label close to slider */
+}
+
+/* Ensure label doesn't wrap or drift */
+.genEditZoomLabel{
+  white-space: nowrap;
+  margin-left: 60px;
+}
+
+/* parent row should lay out left tools + right cluster */
+.genEditZoomRow{
+  display:flex;
+  align-items:center;
+  gap: 0px;
+}
+
+/* push zoom cluster to the right */
+.genEditZoomRight{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+/* keep label + slider tightly grouped */
+.genEditZoomGroup{
+  display:flex;
+  align-items:center;
+  gap:0px;
+}
+
+.genEditZoomLabel{
+  white-space:nowrap;
+  margin-left: 60px;
+}
+
+/* optional */
+.genEditVideoStage audio { display: none; }

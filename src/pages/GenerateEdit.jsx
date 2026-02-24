@@ -151,6 +151,17 @@ export default function GenerateEdit({ user }) {
 
   // ✅ Single viewer element
   const videoRef = useRef(null);
+  // ✅ Audio preview element (single active clip at a time for v1)
+  const audioRef = useRef(null);
+
+  // Track what is currently loaded in the <audio>
+  const loadedAudioClipKeyRef = useRef(null);
+  const loadedAudioSrcRef = useRef("");
+  const isSwappingAudioSrcRef = useRef(false);
+  // Audio sync guards (prevents flashing / random play)
+  const desiredAudioKeyRef = useRef(null);
+  const lastAudioSyncAtRef = useRef(0);
+
 
   // Player UI
   const [isPlaying, setIsPlaying] = useState(false);
@@ -236,6 +247,11 @@ export default function GenerateEdit({ user }) {
 
   // dynamic audio lanes (A1..A5)
   const [audioLaneCount, setAudioLaneCount] = useState(1); // start with just A1
+
+  const libVideosOnly = useMemo(() => (libraryVideos || []).filter((v) => !isAudioMedia(v)), [libraryVideos]);
+  const libAudioOnly  = useMemo(() => (libraryVideos || []).filter((v) =>  isAudioMedia(v)), [libraryVideos]);
+
+  const activeLibList = libTab === "audio" ? libAudioOnly : libVideosOnly;
 
   const AUDIO_TRACKS = useMemo(() => {
     const n = clamp(Number(audioLaneCount) || 1, 1, 5);
@@ -810,6 +826,16 @@ function pasteClipboardAtPlayhead() {
     window.addEventListener("pointercancel", onUp);
   }
 
+  function getMediaType(v) {
+    // support both server styles
+    return String(v?.media_type ?? v?.mediaType ?? "").toLowerCase().trim();
+  }
+
+  function isAudioMedia(v) {
+    const mt = getMediaType(v);
+    return mt === "audio" || mt.startsWith("audio/");
+  }
+
   // -- Selection --
   function setSingleSelection(key) {
     const next = new Set();
@@ -901,7 +927,17 @@ function pasteClipboardAtPlayhead() {
 
         const arr = Array.isArray(vids) ? vids : [];
         setLibraryVideos(arr);
-        if (!selectedVideo && arr.length) setSelectedVideo(arr[0]);
+        console.log(
+          "LIBRARY:",
+          arr.map(v => ({ id: v.id, title: v.title, media_type: v.media_type, filename: v.filename, path: v.path, url: v.url }))
+        );
+
+        if (!selectedVideo && arr.length) {
+          const firstVideo = arr.find((v) => !isAudioMedia(v));
+          const firstAudio = arr.find((v) => isAudioMedia(v));
+          // default to a video if possible, otherwise audio
+          setSelectedVideo(firstVideo || firstAudio || null);
+        }
 
         for (const v of arr.slice(0, 10)) {
           const d = Number(v.durationSeconds);
@@ -1025,6 +1061,109 @@ function pasteClipboardAtPlayhead() {
     const s = Number(c.start) || 0;
     const e = s + clipLen(c);
     return t >= s && t < e;
+  }
+
+  function unloadAudioElement(a) {
+  if (!a) return;
+  try { a.pause(); } catch {}
+  try {
+    a.removeAttribute("src");   // hard unload (prevents “leaking” old audio)
+    a.load();
+  } catch {}
+  loadedAudioClipKeyRef.current = null;
+  loadedAudioSrcRef.current = "";
+  desiredAudioKeyRef.current = null;
+}
+
+// Lightweight “what audio should be active at time t?”
+function getDesiredAudioAtTime(t) {
+  const timelineT = Math.max(0, Number(t) || 0);
+  const clip = findAudioClipAtTime(timelineT);
+  if (!clip || !clip.video) return null;
+
+  const src = streamUrl(clip.video) || "";
+  if (!src) return null;
+
+  const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
+  const targetTime = (Number(clip.in) || 0) + local;
+
+  return { clip, src, targetTime };
+}
+
+  // During playback: don’t reload every tick. Only:
+  // - swap if desired clip key changed
+  // - or drift is “meaningful”
+  // - and throttle small corrections a bit
+  async function syncAudioToTimelineTime(t, { autoplay } = { autoplay: false }) {
+    const a = audioRef.current;
+    if (!a) return;
+
+    const desired = getDesiredAudioAtTime(t);
+
+    // No audio under playhead => HARD stop/unload (no random audio)
+    if (!desired) {
+      if (loadedAudioClipKeyRef.current != null || (a.currentSrc || "")) {
+        unloadAudioElement(a);
+      } else {
+        try { a.pause(); } catch {}
+      }
+      return;
+    }
+
+    // Track what we WANT under the playhead
+    desiredAudioKeyRef.current = desired.clip.key;
+
+    const needsSwap =
+      loadedAudioClipKeyRef.current !== desired.clip.key ||
+      loadedAudioSrcRef.current !== desired.src ||
+      (a.currentSrc || "") !== desired.src;
+
+    // Swap only when needed
+    if (needsSwap) {
+      await ensureAudioLoadedForTimelineTime(t, { autoplay });
+      return;
+    }
+
+    // Same clip already loaded: only correct drift occasionally
+    const now = performance.now();
+    const cur = Number(a.currentTime || 0);
+    const drift = Math.abs(cur - desired.targetTime);
+
+    // Throttle micro-seeks and only fix if noticeably off
+    if (drift > 0.12 && (now - lastAudioSyncAtRef.current) > 120) {
+      lastAudioSyncAtRef.current = now;
+      try { a.currentTime = desired.targetTime; } catch {}
+    }
+
+    // If we should be playing, ensure it stays playing (but only if audio exists)
+    if ((autoplay || wantedPlayRef.current) && a.paused) {
+      const p = a.play?.();
+      if (p?.catch) p.catch(() => {});
+    }
+  }
+
+  function findAudioClipAtTime(t) {
+    const candidates = clipsSorted.filter((c) => c?.kind === "audio" && clipCoversTime(c, t));
+    if (!candidates.length) return null;
+
+    // Priority: higher track first, then latest-starting (so overlaps feel sane)
+    candidates.sort((a, b) => (Number(b.track) || 0) - (Number(a.track) || 0) || (Number(b.start) || 0) - (Number(a.start) || 0));
+    return candidates[0];
+  }
+
+  function findNextAudioStart(afterT, excludeKey = null) {
+    const t = Number(afterT) || 0;
+    const EPS = 1e-6;
+    let best = null;
+
+    for (const c of clipsSorted) {
+      if (c?.kind !== "audio") continue;
+      if (excludeKey && c.key === excludeKey) continue;
+
+      const s = Number(c.start) || 0;
+      if (s >= t - EPS && (best == null || s < best)) best = s;
+    }
+    return best;
   }
 
   function findVideoClipAtTime(t) {
@@ -1286,11 +1425,21 @@ function pasteClipboardAtPlayhead() {
 
   // --------- Viewer: apply mute/vol immediately ---------
   function applyMuteVol() {
-    const v = videoRef.current;
-    if (!v) return;
+    const vv = videoRef.current;
+    const aa = audioRef.current;
+
     try {
-      v.muted = muted;
-      v.volume = clamp(Number(volume), 0, 1);
+      if (vv) {
+        vv.muted = muted;
+        vv.volume = clamp(Number(volume), 0, 1);
+      }
+    } catch {}
+
+    try {
+      if (aa) {
+        aa.muted = muted;
+        aa.volume = clamp(Number(volume), 0, 1);
+      }
     } catch {}
   }
 
@@ -1445,13 +1594,87 @@ function pasteClipboardAtPlayhead() {
     }
   }
 
+  async function ensureAudioLoadedForTimelineTime(t, { autoplay } = { autoplay: false }) {
+    const a = audioRef.current;
+    if (!a) return;
+
+    const token = loadTokenRef.current; // reuse your existing token; keep audio/video aligned
+
+    const timelineT = Math.max(0, Number(t) || 0);
+    const clip = findAudioClipAtTime(timelineT);
+
+    // If no audio clip at this time: pause audio & clear loaded state
+    if (!clip || !clip.video) {
+      unloadAudioElement(a); // ✅ hard-stop & unload so it can't “leak”
+      return;
+    }
+
+    const src = streamUrl(clip.video) || "";
+    if (!src) return;
+
+    const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
+    const targetAudioTime = (Number(clip.in) || 0) + local;
+
+    const needsSrcChange =
+      loadedAudioClipKeyRef.current !== clip.key ||
+      loadedAudioSrcRef.current !== src;
+
+    if (needsSrcChange) {
+      isSwappingAudioSrcRef.current = true;
+      try {
+        try { a.pause(); } catch {}
+
+        loadedAudioClipKeyRef.current = clip.key;
+        loadedAudioSrcRef.current = src;
+
+        if ((a.getAttribute("src") || "") !== src) {
+          a.setAttribute("src", src);
+        }
+
+        try { a.load(); } catch {}
+
+        try {
+          if (a.readyState < 1) {
+            await waitForEvent(a, "loadedmetadata", 8000);
+          }
+        } catch {}
+
+        // if something else took over, bail
+        if (loadTokenRef.current !== token) return;
+
+        applyMuteVol();
+
+        try { a.currentTime = targetAudioTime; } catch {}
+
+        if (a.readyState < 2) {
+          try { await waitForEvent(a, "canplay", 5000); } catch {}
+        }
+
+        if (loadTokenRef.current !== token) return;
+      } finally {
+        isSwappingAudioSrcRef.current = false;
+      }
+    } else {
+      applyMuteVol();
+      const cur = Number(a.currentTime || 0);
+      if (Math.abs(cur - targetAudioTime) > 0.05) {
+        try { a.currentTime = targetAudioTime; } catch {}
+      }
+    }
+
+    if (autoplay || wantedPlayRef.current) {
+      const p = a.play?.();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }
+  }
+
   // ---- Pause catcher: only pause at true end-of-timeline or user pause ----
   function forceResume(reason = "") {
     const v = videoRef.current;
+    const a = audioRef.current;
     if (!v) return;
     if (!wantedPlayRef.current) return;
 
-    // ✅ FIX: Only treat as finished if playhead is at end.
     const t = playheadRef.current ?? playhead;
     if (atTimelineEnd(t)) {
       wantedPlayRef.current = false;
@@ -1465,12 +1688,27 @@ function pasteClipboardAtPlayhead() {
       if (!wantedPlayRef.current) return;
       if (resumeTokenRef.current !== token) return;
 
-      if (!v.paused && !v.ended) return;
+      // video
+      if (v.paused || v.ended) {
+        const p = v.play?.();
+        if (p?.catch) p.catch(() => {});
+      }
 
-      const p = v.play?.();
-      if (p && typeof p.catch === "function") p.catch(() => {});
+      // ✅ audio: only resume if an audio clip exists under the current playhead
+      if (a) {
+        const tNow = playheadRef.current ?? playhead;
+        const desired = getDesiredAudioAtTime(tNow);
+
+        if (!desired) {
+          // ensure it stays silent
+          unloadAudioElement(a);
+        } else if (a.paused || a.ended) {
+          const p2 = a.play?.();
+          if (p2?.catch) p2.catch(() => {});
+        }
+      }
+
       if (triesLeft <= 0) return;
-
       window.setTimeout(() => attempt(triesLeft - 1), 120);
     };
 
@@ -1518,13 +1756,13 @@ function pasteClipboardAtPlayhead() {
   // Transport: Play/Pause
   async function togglePlay() {
     const v = videoRef.current;
+    const a = audioRef.current;
     if (!v) return;
 
     if (wantedPlayRef.current) {
       wantedPlayRef.current = false;
-      try {
-        v.pause();
-      } catch {}
+      try { v.pause(); } catch {}
+      try { a?.pause?.(); } catch {}
       setIsPlaying(false);
       return;
     }
@@ -1539,12 +1777,18 @@ function pasteClipboardAtPlayhead() {
       const target = ns != null ? ns : 0;
       setPlayhead(target);
       playheadRef.current = target;
+
       await ensureLoadedForTimelineTime(target, { autoplay: true });
+      await ensureAudioLoadedForTimelineTime(target, { autoplay: true });
+
       forceResume("togglePlay-gap");
       return;
     }
 
+    // ✅ normal case: in a video clip already
     await ensureLoadedForTimelineTime(t, { autoplay: true });
+    await ensureAudioLoadedForTimelineTime(t, { autoplay: true });
+
     forceResume("togglePlay");
   }
 
@@ -1557,6 +1801,7 @@ function pasteClipboardAtPlayhead() {
       setPlayhead(t);
       playheadRef.current = t;
     });
+    ensureAudioLoadedForTimelineTime(t, { autoplay: false });
   }
 
   function onSequenceScrubCommit(value) {
@@ -1568,6 +1813,7 @@ function pasteClipboardAtPlayhead() {
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
       if (wantedPlayRef.current) forceResume("scrubCommit");
     });
+    ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
   }
 
   function enterFullscreen() {
@@ -1586,6 +1832,7 @@ function pasteClipboardAtPlayhead() {
     playheadRef.current = t;
     isScrubbingRef.current = false;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("goToStart");
     });
   }
@@ -1597,6 +1844,7 @@ function pasteClipboardAtPlayhead() {
     playheadRef.current = t;
     isScrubbingRef.current = false;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("goToEnd");
     });
   }
@@ -1612,6 +1860,7 @@ function pasteClipboardAtPlayhead() {
     isScrubbingRef.current = false;
 
     ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
+      ensureAudioLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current })
       if (wantedPlayRef.current) forceResume("prevClip");
     });
   }
@@ -1627,6 +1876,7 @@ function pasteClipboardAtPlayhead() {
     isScrubbingRef.current = false;
 
     ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
+      ensureAudioLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current })
       if (wantedPlayRef.current) forceResume("nextClip");
     });
   }
@@ -1653,6 +1903,7 @@ function pasteClipboardAtPlayhead() {
 
     await ensureLoadedForTimelineTime(nextStart, { autoplay: true });
     forceResume("advanceToNextClip");
+    await syncAudioToTimelineTime(nextStart, { autoplay: true });
 
     window.setTimeout(() => {
       forceResume("advanceToNextClip-delayed");
@@ -1773,6 +2024,11 @@ function pasteClipboardAtPlayhead() {
       setPlayhead(newPlayhead);
       playheadRef.current = newPlayhead;
 
+      if (wantedPlayRef.current && !isSwappingAudioSrcRef.current) {
+        // ✅ lightweight sync (no flashing)
+        syncAudioToTimelineTime(newPlayhead, { autoplay: true });
+      }
+
       // ✅ Only advance when the underlying video time reaches OUT
       const ct = Number(v.currentTime || 0);
       if (ct >= clipOut - EPS_OUT) {
@@ -1787,25 +2043,37 @@ function pasteClipboardAtPlayhead() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipsSorted.length, playhead]);
 
-  // When clips change, re-align viewer to current playhead clip if needed
-  useEffect(() => {
-    const t = playheadRef.current ?? playhead;
-    const clip = findVideoClipAtTime(t);
-    if (!clip) return;
+ // When clips change, re-align viewer to current playhead clip if needed
+    useEffect(() => {
+      const t = playheadRef.current ?? playhead;
 
-    if (loadedClipKeyRef.current !== clip.key) {
-      ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
-        if (wantedPlayRef.current) forceResume("clipsChanged");
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipsSorted.length]);
+      // ✅ NEW: audio might need re-pick even if video clip doesn't change
+      const ac = findAudioClipAtTime(t);
+      if (ac && loadedAudioClipKeyRef.current !== ac.key) {
+        ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+      }
+      if (!ac && loadedAudioClipKeyRef.current != null) {
+        // no audio at this time anymore
+        ensureAudioLoadedForTimelineTime(t, { autoplay: false });
+      }
+
+      const clip = findVideoClipAtTime(t);
+      if (!clip) return;
+
+      if (loadedClipKeyRef.current !== clip.key) {
+        ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+          ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+          if (wantedPlayRef.current) forceResume("clipsChanged");
+        });
+      }
+    }, [clipsSorted.length]);
 
   // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
   useEffect(() => {
     if (!viewerSrc) return;
     const t = playheadRef.current ?? playhead;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current })
       if (wantedPlayRef.current) forceResume("viewerSrcChanged");
       ensureProgressKick("viewerSrcChanged");
     });
@@ -1859,6 +2127,7 @@ function pasteClipboardAtPlayhead() {
       setPlayhead(tt);
       playheadRef.current = tt;
       ensureLoadedForTimelineTime(tt, { autoplay: false });
+      ensureAudioLoadedForTimelineTime(tt, { autoplay: false });
     };
 
     const onUp = (ev) => {
@@ -1895,28 +2164,40 @@ function pasteClipboardAtPlayhead() {
     playheadRef.current = t;
 
     ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
+      ensureAudioLoadedForTimelineTime(t, { autoplay: false });
       isScrubbingRef.current = false;
       if (wantedPlayRef.current) {
         ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
+        ensureAudioLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
       }
     });
   }
 
   // -------- Clip add/remove --------
-  async function addVideoToTimelineAt(video, start) {
-    
+  async function addMediaToTimelineAt(video, start, { forceKind = null, forceTrack = null } = {}) {
     pushUndo("add clip");
-    
+
+    const isAudio = isAudioMedia(video);
+    const kind = forceKind ?? (isAudio ? "audio" : "video");
+
+    // Video must live on V1
+    let track = kind === "video" ? 0 : (Number(forceTrack) || 0);
+
+    // If we’re placing audio on a higher lane than exists, expand lanes first
+    if (kind === "audio") {
+      setAudioLaneCount((n) => clamp(Math.max(Number(n) || 1, track + 1), 1, 5));
+      track = clamp(track, 0, 4);
+    }
+
     const dur = await getVideoDurationSeconds(video);
+
     const item = makeTimelineItem({
-      kind: "video",
-      track: 0,
+      kind,
+      track,
       video,
       start: Math.max(0, start),
       sourceDuration: dur,
     });
-
-    
 
     setClips((t) => [...t, item]);
     setActiveClipKey(item.key);
@@ -2027,6 +2308,20 @@ function pasteClipboardAtPlayhead() {
       });
     });
   }
+
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    const log = (e) => console.log("[AUDIO]", e.type, {
+      src: a.currentSrc,
+      readyState: a.readyState,
+      paused: a.paused,
+      ct: a.currentTime,
+      err: a.error?.message || a.error?.code
+    });
+    ["play","pause","waiting","stalled","canplay","error","loadedmetadata"].forEach(evt => a.addEventListener(evt, log));
+    return () => ["play","pause","waiting","stalled","canplay","error","loadedmetadata"].forEach(evt => a.removeEventListener(evt, log));
+  }, []);
 
   // Ctrl/Cmd + S = Save
   useEffect(() => {
@@ -2372,6 +2667,12 @@ function pasteClipboardAtPlayhead() {
       x: e.clientX + 12,
       y: e.clientY + 12,
       text: `Slip ${fmtTime(in0)} → ${fmtTime(out0)} (Δ +0:00)`,
+    });
+
+    // ✅ After moving clips, re-evaluate audio at current playhead
+    requestAnimationFrame(() => {
+      const t = playheadRef.current ?? playhead;
+      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
     });
   }
 
@@ -2923,6 +3224,12 @@ function onTrimPointerUp(e) {
   try {
     e.currentTarget.releasePointerCapture(e.pointerId);
   } catch {}
+
+  // ✅ After moving clips, re-evaluate audio at current playhead
+  requestAnimationFrame(() => {
+    const t = playheadRef.current ?? playhead;
+    ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+  });
 }
 
 
@@ -3002,7 +3309,20 @@ function onTrimPointerUp(e) {
     if (!v) return;
 
     const t = getTimeFromClientX(e.clientX);
-    await addVideoToTimelineAt(v, t);
+
+    const isAudio = isAudioMedia(v);
+
+    // Detect which lane you dropped on (based on mouse Y)
+    const lane = getLaneFromClientY(e.clientY);
+
+    if (isAudio) {
+      // If user dropped onto an audio lane, use that track. Otherwise default to A1 (track 0).
+      const targetTrack = lane?.kind === "audio" ? (Number(lane.track) || 0) : 0;
+      await addMediaToTimelineAt(v, t, { forceKind: "audio", forceTrack: targetTrack });
+    } else {
+      // Video always goes to V1 regardless of where you drop
+      await addMediaToTimelineAt(v, t, { forceKind: "video", forceTrack: 0 });
+    }
   }
 
   // -------- Sequence title edit --------
@@ -3049,18 +3369,29 @@ function onTrimPointerUp(e) {
   function toggleMute() {
     const next = !muted;
     setMuted(next);
+
     const v = videoRef.current;
+    const a = audioRef.current;
     if (v) v.muted = next;
+    if (a) a.muted = next;
   }
 
   function setPlayerVolume(next) {
     const x = clamp(Number(next), 0, 1);
     setVolume(x);
-    if (x > 0) setMuted(false);
+
     const v = videoRef.current;
+    const a = audioRef.current;
+
+    if (x > 0) setMuted(false);
+
     if (v) {
       v.volume = x;
       if (x > 0) v.muted = false;
+    }
+    if (a) {
+      a.volume = x;
+      if (x > 0) a.muted = false;
     }
   }
 
@@ -3211,17 +3542,21 @@ function onTrimPointerUp(e) {
           </div>
 
           <div className="genEditLibraryBody">
-            {libTab === "audio" ? (
-              <div className="genEditEmpty">Audio library coming next.</div>
-            ) : loadingLib ? (
-              <div className="genEditEmpty">Loading your videos…</div>
+            {loadingLib ? (
+              <div className="genEditEmpty">
+                {libTab === "audio" ? "Loading your audio…" : "Loading your videos…"}
+              </div>
             ) : libErr ? (
               <div className="genEditEmpty">{libErr}</div>
-            ) : libraryVideos.length === 0 ? (
-              <div className="genEditEmpty">No uploads yet. Upload a video, then it’ll appear here.</div>
+            ) : activeLibList.length === 0 ? (
+              <div className="genEditEmpty">
+                {libTab === "audio"
+                  ? "No audio uploads yet. Upload audio, then it’ll appear here."
+                  : "No video uploads yet. Upload a video, then it’ll appear here."}
+              </div>
             ) : (
               <div className="genEditLibList">
-                {libraryVideos.map((v) => {
+                {activeLibList.map((v) => {
                   const isActive = selectedVideo?.id === v.id;
                   const src = thumbUrl(v);
                   const id = String(v.id);
@@ -3252,7 +3587,9 @@ function onTrimPointerUp(e) {
                       }}
                       title="Drag onto the timeline"
                     >
-                      <div className="genEditLibThumb">{src ? <img src={src} alt="" /> : <div className="genEditThumbPh" />}</div>
+                      <div className="genEditLibThumb">
+                        {src ? <img src={src} alt="" /> : <div className="genEditThumbPh" />}
+                      </div>
 
                       <div className="genEditLibMeta">
                         <div className="genEditLibName" title={v.title}>
@@ -3260,6 +3597,7 @@ function onTrimPointerUp(e) {
                         </div>
                         <div className="genEditLibSub">
                           <span className="muted">Duration: </span> {durLabel}
+                          {isAudioMedia(v) ? <span className="muted"> · Audio</span> : null}
                         </div>
                       </div>
 
@@ -3337,6 +3675,7 @@ function onTrimPointerUp(e) {
                 <div className="genEditVideoWrap">
                   <div className="genEditVideoStage">
                     <video ref={videoRef} className="genEditVideo" preload="auto" playsInline src={viewerSrc} />
+                    <audio ref={audioRef} preload="auto" />
 
                     <div className="genEditOverlayControls" role="group" aria-label="Player controls">
                       <button type="button" className="genEditPBtn" onClick={togglePlay} disabled={!hasAnyClips} aria-label={isPlaying ? "Pause" : "Play"}>
@@ -3437,32 +3776,37 @@ function onTrimPointerUp(e) {
 
             </div>
 
-            <div className="genEditZoomLabel">
-              <span className="muted">Zoom</span> <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
+            <div className="genEditZoomRight">
+              <div className="genEditZoomGroup">
+                <div className="genEditZoomLabel">
+                  <span className="muted">Zoom</span>{" "}
+                  <span style={{ fontWeight: 900 }}>{Math.round(pps)} px/s</span>
+                </div>
+
+                <input
+                  className="genEditZoomSlider"
+                  type="range"
+                  min={2}
+                  max={80}
+                  step={1}
+                  value={pps}
+                  onChange={(e) => setPps(Number(e.target.value) || 40)}
+                  style={{
+                    "--zoom-track-bg": `linear-gradient(
+                      90deg,
+                      rgba(140,90,255,1) 0%,
+                      rgba(140,90,255,1) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
+                      rgba(255,255,255,0.25) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
+                      rgba(255,255,255,0.25) 100%
+                    )`,
+                  }}
+                />
+              </div>
+
+              <button type="button" className="genEditZoomBtn" onClick={() => setPps(40)}>
+                Reset
+              </button>
             </div>
-
-            <input
-              className="genEditZoomSlider"
-              type="range"
-              min={2}
-              max={80}
-              step={1}
-              value={pps}
-              onChange={(e) => setPps(Number(e.target.value) || 40)}
-              style={{
-                "--zoom-track-bg": `linear-gradient(
-                  90deg,
-                  rgba(140,90,255,1) 0%,
-                  rgba(140,90,255,1) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
-                  rgba(255,255,255,0.25) ${(((pps - 2) / (80 - 2)) * 100) || 0}%,
-                  rgba(255,255,255,0.25) 100%
-                )`,
-              }}
-            />
-
-            <button type="button" className="genEditZoomBtn" onClick={() => setPps(40)}>
-              Reset
-            </button>
           </div>
 
           {/* Timeline */}

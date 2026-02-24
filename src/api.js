@@ -95,13 +95,30 @@ export async function postComment(videoId, body, parentCommentId = null) {
   return data;
 }
 
-export async function uploadVideo({ title, description, tags, visibility, file }) {
+export async function uploadVideo({
+  title,
+  description,
+  tags,
+  visibility,
+  file,
+
+  // new
+  mediaType = "video",   // "video" | "audio"
+  assetScope = "public", // "public" | "library"
+} = {}) {
   const fd = new FormData();
-  fd.append("title", title);
-  fd.append("description", description || "");
-  fd.append("tags", tags || "");
+  fd.append("title", title ?? "");
+  fd.append("description", description ?? "");
+  fd.append("tags", tags ?? "");
   fd.append("visibility", visibility || "public");
-  fd.append("video", file); // must match upload.single("video")
+
+  // new metadata
+  fd.append("media_type", mediaType);
+  fd.append("asset_scope", assetScope);
+
+  // keep your existing server expectation:
+  // must match upload.single("video") in server.js
+  fd.append("video", file);
 
   const res = await fetch(`${API_BASE}/api/videos/upload`, {
     method: "POST",
@@ -202,9 +219,18 @@ export async function recordView(id) {
   return data;
 }
 
-export async function getUserVideos(username, { sort } = {}) {
+export async function getUserVideos(
+  username,
+  { sort, scope, type } = {} // NEW: scope + type
+) {
   const params = new URLSearchParams();
   if (sort) params.set("sort", sort);
+
+  // NEW filters:
+  // scope: "public" | "library"
+  // type: "video" | "audio" | "all"
+  if (scope) params.set("scope", scope);
+  if (type) params.set("type", type);
 
   const res = await fetch(
     `${API_BASE}/api/profile/u/${encodeURIComponent(username)}/videos?${params.toString()}`,
