@@ -1085,3 +1085,128 @@
 
 /* optional */
 .genEditVideoStage audio { display: none; }
+
+.genEditAudioPh{
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  font-size: 20px;
+}
+
+.genEditAudioPh.isPreviewing {
+  outline: 2px solid rgba(140, 90, 255, 0.9);
+  box-shadow: 0 0 0 4px rgba(140, 90, 255, 0.25);
+}
+
+.genEditAudioPh {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* Overlay */
+.genEditAudioPh::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+/* Icon */
+.genEditAudioIcon {
+  position: relative;
+  font-size: 22px;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+/* Hover state */
+.genEditAudioPh:hover::before {
+  opacity: 1;
+}
+
+.genEditAudioPh:hover .genEditAudioIcon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* If currently previewing, show icon even without hover */
+.genEditAudioPh.isPreviewing::before {
+  opacity: 1;
+}
+
+.genEditAudioPh.isPreviewing .genEditAudioIcon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.genEditAudioPh {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* Default music note */
+.genEditAudioNote {
+  font-size: 20px;
+  opacity: 0.85;
+  transition: opacity 0.18s ease;
+}
+
+/* Dark overlay */
+.genEditAudioPh::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+/* Hover icon */
+.genEditAudioOverlayIcon {
+  position: absolute;
+  font-size: 22px;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+/* Hover state */
+.genEditAudioPh:hover::before {
+  opacity: 1;
+}
+
+.genEditAudioPh:hover .genEditAudioOverlayIcon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* When previewing, show overlay + stop icon */
+.genEditAudioPh.isPreviewing::before {
+  opacity: 1;
+}
+
+.genEditAudioPh.isPreviewing .genEditAudioOverlayIcon {
+  opacity: 1;
+  transform: scale(1);
+}
+

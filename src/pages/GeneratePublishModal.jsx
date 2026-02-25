@@ -51,11 +51,13 @@ export default function GeneratePublishModal({
       visibility: String(visibility || "public"),
       timelineName: String(timelineName || "Timeline"),
       timeline: timeline.map((c) => ({
-        videoId: c.videoId ?? c.video?.id,
-        start: Number(c.start || 0),
-        in: Number(c.in || 0),
-        out: Number(c.out || 0),
-      })),
+      kind: c.kind || "video",
+      track: Number(c.track || 0),
+      videoId: c.videoId ?? c.video?.id,
+      start: Number(c.start || 0),
+      in: Number(c.in || 0),
+      out: Number(c.out || 0),
+    })),
     };
 
     try {

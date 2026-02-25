@@ -35,7 +35,7 @@ export async function getVideo(id) {
 
 // THUMBS
 export function thumbUrl(video) {
-  return video?.thumbUrl || "";
+  return video?.thumbUrl || video?.thumb || "";
 }
 
 // STREAM
@@ -113,8 +113,8 @@ export async function uploadVideo({
   fd.append("visibility", visibility || "public");
 
   // new metadata
-  fd.append("media_type", mediaType);
-  fd.append("asset_scope", assetScope);
+  fd.append("mediaType", mediaType);
+  fd.append("assetScope", assetScope);
 
   // keep your existing server expectation:
   // must match upload.single("video") in server.js

@@ -6,6 +6,11 @@ import { getUserVideos, whoami, streamUrl, thumbUrl } from "../api.js";
 import GeneratePublishModal from "./GeneratePublishModal.jsx";
 
 const PROJECTS_INDEX_LS_KEY = "mytube_generate_projects_v1"; // list of { id, sequenceTitle, updatedAt }
+function projectKey(id) { return `genproj:${id}`; }
+
+function makeProjectId() {
+  return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
 function safeJsonParse(s, fallback) {
   try {
@@ -16,43 +21,154 @@ function safeJsonParse(s, fallback) {
   }
 }
 
-function makeProjectId() {
-  return `p_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+function clampTrackForKind(kind, track) {
+  if (kind === "video") return 0;
+  return clamp(Number(track) || 0, 0, 4);
 }
 
-function projectKey(id) {
-  return `genproj:${id}`;
+function serializeClips(clips) {
+  const arr = Array.isArray(clips) ? clips : [];
+  return arr
+    .filter(Boolean)
+    .map((c) => {
+      const kind = c?.kind === "audio" ? "audio" : "video";
+      const videoId = c?.video?.id ?? c?.videoId ?? null;
+
+      return {
+        key: String(c?.key || ""),
+        kind,
+        track: clampTrackForKind(kind, c?.track),
+        start: Math.max(0, Number(c?.start) || 0),
+        in: Math.max(0, Number(c?.in) || 0),
+        out: Math.max(0, Number(c?.out) || 0),
+        sourceDuration: Math.max(
+          0,
+          Number(c?.sourceDuration || c?.video?.durationSeconds || 0) || 0
+        ),
+        videoId,
+      };
+    })
+    // if key somehow blank, give it one so React + persistence are stable
+    .map((c) => ({
+      ...c,
+      key: c.key || `${c.kind}-${c.videoId || "x"}-${c.track}-${c.start}-${Date.now()}`,
+    }));
+}
+
+function requiredAudioLaneCountFromLite(clipsLite) {
+  const maxTrack =
+    (Array.isArray(clipsLite) ? clipsLite : [])
+      .filter((c) => c?.kind === "audio")
+      .reduce((m, c) => Math.max(m, Number(c.track) || 0), -1);
+
+  return Math.max(1, maxTrack + 1);
+}
+
+function hydrateClipsFromSaved(savedClips, libraryVideos) {
+  const lite = Array.isArray(savedClips) ? savedClips : [];
+
+  return lite
+    .filter(Boolean)
+    .map((c) => {
+      const kind = c.kind === "audio" ? "audio" : "video";
+      const track = clampTrackForKind(kind, c.track);
+      const videoId = c?.videoId ?? c?.video?.id ?? null;
+
+      const bound =
+        videoId != null && Array.isArray(libraryVideos)
+          ? libraryVideos.find((v) => String(v.id) === String(videoId))
+          : null;
+
+      const srcDur =
+        Number(c.sourceDuration || bound?.durationSeconds || 0) || 0;
+
+      const in0 = Math.max(0, Number(c.in) || 0);
+      const out0 = Math.max(in0, Number(c.out) || 0);
+
+      return {
+        key: String(
+          c.key || `${kind}-${videoId || "x"}-${track}-${Number(c.start) || 0}-${Date.now()}`
+        ),
+        kind,
+        track,
+        start: Math.max(0, Number(c.start) || 0),
+        in: in0,
+        out: out0,
+        sourceDuration: srcDur,
+        videoId,
+        video: bound || (videoId != null ? { id: videoId, title: "(loading…)" } : null),
+      };
+    });
+}
+
+function canUseLocalStorage() {
+  if (typeof window === "undefined") return false;
+  try {
+    const k = "__ls_test__";
+    window.localStorage.setItem(k, "1");
+    window.localStorage.removeItem(k);
+    return true;
+  } catch (e) {
+    console.warn("[GenerateEdit] localStorage unavailable:", e);
+    return false;
+  }
 }
 
 function loadProjectIndex() {
-  if (typeof window === "undefined") return [];
+  if (!canUseLocalStorage()) return [];
   const raw = window.localStorage.getItem(PROJECTS_INDEX_LS_KEY);
   const arr = safeJsonParse(raw, []);
-  return Array.isArray(arr) ? arr : [];
-}
-
-function getIndexedProjectTitle(id) {
-  const idx = loadProjectIndex();
-  const hit = idx.find((x) => String(x?.id) === String(id));
-  const t = String(hit?.sequenceTitle || "").trim();
-  return t || "";
+  const out = Array.isArray(arr) ? arr : [];
+  console.log("[GenerateEdit] loadProjectIndex", out);
+  return out;
 }
 
 function saveProjectIndex(arr) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(PROJECTS_INDEX_LS_KEY, JSON.stringify(arr));
+  if (!canUseLocalStorage()) return false;
+  try {
+    window.localStorage.setItem(PROJECTS_INDEX_LS_KEY, JSON.stringify(arr || []));
+    console.log("[GenerateEdit] saveProjectIndex OK", arr);
+    return true;
+  } catch (e) {
+    console.error("[GenerateEdit] saveProjectIndex FAILED", e);
+    return false;
+  }
 }
 
-function loadProjectById(id) {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(projectKey(id));
-  const obj = safeJsonParse(raw, null);
-  return obj && typeof obj === "object" ? obj : null;
-}
+  function getIndexedProjectTitle(id) {
+    const idx = loadProjectIndex();
+   const hit = idx.find((x) => String(x?.id) === String(id));
+    const t = String(hit?.sequenceTitle || "").trim();
+    return t || "";
+  }
+
+  function loadProjectById(id) {
+    if (!canUseLocalStorage()) return null;
+    const key = projectKey(id);
+    const raw = window.localStorage.getItem(key);
+
+    if (raw == null) return null;
+
+    const obj = safeJsonParse(raw, "__PARSE_FAIL__");
+    if (obj === "__PARSE_FAIL__") {
+      console.error("[GenerateEdit] Project JSON parse failed for", key, "raw=", raw.slice(0, 200));
+      return { __parseFailed: true, raw }; // sentinel
+    }
+
+    return obj && typeof obj === "object" ? obj : null;
+  }
 
 function saveProjectById(id, payload) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(projectKey(id), JSON.stringify(payload));
+  if (!canUseLocalStorage()) return false;
+  try {
+    const key = projectKey(id);
+    window.localStorage.setItem(key, JSON.stringify(payload));
+    console.log("[GenerateEdit] saveProjectById OK", id, "key=", key, "bytes=", JSON.stringify(payload).length);
+    return true;
+  } catch (e) {
+    console.error("[GenerateEdit] saveProjectById FAILED", e);
+    return false;
+  }
 }
 
 function fmtTime(seconds) {
@@ -103,7 +219,9 @@ function makeTimelineItem({ kind, track, video, start, sourceDuration }) {
 
 export default function GenerateEdit({ user }) {
   const nav = useNavigate();
-  const { projectId: routeProjectId } = useParams();
+  
+  const params = useParams();
+  const routeProjectId = params.projectId || params.id || "";
 
   // -------- Project state --------
   const [projectId, setProjectId] = useState(routeProjectId || "");
@@ -118,9 +236,6 @@ export default function GenerateEdit({ user }) {
   const [activeClipKey, setActiveClipKey] = useState(null);
   const [selectedClipKeys, setSelectedClipKeys] = useState(() => new Set());
   const selectedClipKeysRef = useRef(new Set());
-  
-
-
 
   useEffect(() => {
     selectedClipKeysRef.current = selectedClipKeys;
@@ -151,17 +266,24 @@ export default function GenerateEdit({ user }) {
 
   // ✅ Single viewer element
   const videoRef = useRef(null);
-  // ✅ Audio preview element (single active clip at a time for v1)
-  const audioRef = useRef(null);
 
-  // Track what is currently loaded in the <audio>
-  const loadedAudioClipKeyRef = useRef(null);
-  const loadedAudioSrcRef = useRef("");
-  const isSwappingAudioSrcRef = useRef(false);
-  // Audio sync guards (prevents flashing / random play)
-  const desiredAudioKeyRef = useRef(null);
-  const lastAudioSyncAtRef = useRef(0);
+  // ---- Multi-track audio pool ----
+  const audioHostRef = useRef(null); // hidden DOM container to hold <audio> nodes
+  const audioPoolRef = useRef(new Map());
 
+  // ---- Library audio preview (click-to-play on thumbnail) ----
+  const previewAudioRef = useRef(null);        // single <audio> used for library previews
+  const [previewAudioId, setPreviewAudioId] = useState(null); // which library audio is currently previewing
+
+  // key -> {
+  //   el: HTMLAudioElement,
+  //   src: string,
+  //   srcNorm: string,
+  //   swapping: boolean,
+  //   lastSyncAt: number,
+  //   lastWantedAt: number,     // ✅ hysteresis to avoid thrash/crackle
+  //   everPlayed: boolean,
+  // }
 
   // Player UI
   const [isPlaying, setIsPlaying] = useState(false);
@@ -175,6 +297,7 @@ export default function GenerateEdit({ user }) {
   const isDraggingPlayheadRef = useRef(false);
 
   const isDraggingClipRef = useRef(false);
+  
   const dragClipKeyRef = useRef(null);
   const dragClipStartRef = useRef(0);
   const dragStartClientXRef = useRef(0);
@@ -219,6 +342,12 @@ export default function GenerateEdit({ user }) {
   const EDGE_SNAP_SEC = 0.2;
   const prevPpsRef = useRef(pps);
 
+  // ✅ clocking
+  const rafTickRef = useRef(0);
+  const rvfcHandleRef = useRef(0); // ✅ requestVideoFrameCallback handle
+  const lastUiPlayheadSetRef = useRef(0);
+  const lastAudioSyncCallRef = useRef(0);
+
   // Tooling
   const [tool, setTool] = useState("select"); // "select" | "razor" | "ripple" | "slip" | "roll" | "trackFwd"
   const [razorHoverT, setRazorHoverT] = useState(null); // timeline seconds under cursor in razor mode
@@ -235,7 +364,7 @@ export default function GenerateEdit({ user }) {
   const [slipTip, setSlipTip] = useState(null);
   // slipTip: { x, y, text } using client coords (position:fixed)
 
-  // Trim/Ripple tooltip (same behavior as Trim/Slip: appears on drag, follows cursor, hides on up)
+  // Trim/Ripple tooltip
   const [trimTip, setTrimTip] = useState(null);
   // trimTip: { x, y, text } using client coords (position:fixed)
 
@@ -248,8 +377,68 @@ export default function GenerateEdit({ user }) {
   // dynamic audio lanes (A1..A5)
   const [audioLaneCount, setAudioLaneCount] = useState(1); // start with just A1
 
+
+  const clipsRef = useRef([]);
+  const sequenceTitleRef = useRef("Timeline");
+  const playheadStateRef = useRef(0);
+  const audioLaneCountRef = useRef(1);
+
+  useEffect(() => { clipsRef.current = clips; }, [clips]);
+  useEffect(() => { sequenceTitleRef.current = sequenceTitle; }, [sequenceTitle]);
+  useEffect(() => { playheadStateRef.current = playhead; }, [playhead]);
+  useEffect(() => { audioLaneCountRef.current = audioLaneCount; }, [audioLaneCount]);
+
+  function setClipsSynced(updater) {
+  setClips((prev) => {
+    const next = typeof updater === "function" ? updater(prev) : updater;
+    clipsRef.current = next;
+    return next;
+  });
+}
+
+  function normalizeMediaUrl(u) {
+    try {
+      return new URL(String(u || ""), window.location.href).href;
+    } catch {
+      return String(u || "");
+    }
+  }
+
+  function resolveVideoById(id) {
+    if (id == null) return null;
+    const hit = (libraryVideos || []).find((v) => String(v.id) === String(id));
+    return hit || null;
+  }
+
+  function resolveMediaForClip(c) {
+    const id = c?.videoId ?? c?.video?.id ?? null;
+    if (id == null) return null;
+
+    // Prefer up-to-date library object if we have it
+    const fresh = resolveVideoById(id);
+    if (fresh) return fresh;
+
+    // Fallback: id-only object so streamUrl({id}) can still work
+    return { id };
+  }
+
+  // ✅ helper used by audio swap detection
+  function normalizeUrl(u) {
+    return normalizeMediaUrl(u);
+  }
+
+  function getMediaType(v) {
+    // support both server styles
+    return String(v?.media_type ?? v?.mediaType ?? "").toLowerCase().trim();
+  }
+
+  function isAudioMedia(v) {
+    const mt = getMediaType(v);
+    return mt === "audio" || mt.startsWith("audio/");
+  }
+
   const libVideosOnly = useMemo(() => (libraryVideos || []).filter((v) => !isAudioMedia(v)), [libraryVideos]);
-  const libAudioOnly  = useMemo(() => (libraryVideos || []).filter((v) =>  isAudioMedia(v)), [libraryVideos]);
+  const libAudioOnly = useMemo(() => (libraryVideos || []).filter((v) => isAudioMedia(v)), [libraryVideos]);
 
   const activeLibList = libTab === "audio" ? libAudioOnly : libVideosOnly;
 
@@ -264,122 +453,123 @@ export default function GenerateEdit({ user }) {
 
   const LANES = useMemo(() => [...VIDEO_TRACKS, ...AUDIO_TRACKS], [VIDEO_TRACKS, AUDIO_TRACKS]);
 
-    // ---------------- Undo / Redo ----------------
+  // ---------------- Undo / Redo ----------------
   const UNDO_LIMIT = 60;
 
   const undoStackRef = useRef([]); // [{ sequenceTitle, clips, playhead, audioLaneCount }]
   const redoStackRef = useRef([]);
 
   // -------- Copy / Paste clipboard --------
-// Stores a snapshot of selected clips with starts relative to the earliest start
-const clipClipboardRef = useRef(null);
+  // Stores a snapshot of selected clips with starts relative to the earliest start
+  const clipClipboardRef = useRef(null);
 
-function selectTrackForwardFrom({ kind, track, time, allLanes = false }) {
-  const t0 = Number(time) || 0;
-  const EPS = 1e-6;
+  const clipsSorted = useMemo(() => {
+    return clips
+      .slice()
+      .sort((a, b) => a.start - b.start || (Number(b.track) || 0) - (Number(a.track) || 0));
+  }, [clips]);
 
-  const keys = clipsSorted
-    .filter((c) => {
-      if (!c) return false;
+  function selectTrackForwardFrom({ kind, track, time, allLanes = false }) {
+    const t0 = Number(time) || 0;
+    const EPS = 1e-6;
 
-      if (!allLanes) {
-        if (c.kind !== kind) return false;
-        if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
+    const keys = clipsSorted
+      .filter((c) => {
+        if (!c) return false;
+
+        if (!allLanes) {
+          if (c.kind !== kind) return false;
+          if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
+        }
+
+        const s = Number(c.start) || 0;
+        return s >= t0 - EPS;
+      })
+      .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+      .map((c) => c.key);
+
+    setSelectionFromKeys(keys, { additive: false });
+  }
+
+  function newClipKeyLike(oldKey) {
+    return `${oldKey}-P-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function getSelectedOrActiveKeys() {
+    const sel = Array.from(selectedClipKeysRef.current || []);
+    if (sel.length) return sel;
+    return activeClipKey ? [activeClipKey] : [];
+  }
+
+  function copySelectedClips() {
+    const keys = getSelectedOrActiveKeys();
+    if (!keys.length) return;
+
+    const picked = clips
+      .filter((c) => c && keys.includes(c.key))
+      .map((c) => ({
+        kind: c.kind,
+        track: Number(c.track) || 0,
+        start: Number(c.start) || 0,
+        in: Number(c.in) || 0,
+        out: Number(c.out) || 0,
+        sourceDuration: Number(c.sourceDuration) || Number(c?.video?.durationSeconds) || 0,
+        video: c.video || null,
+        videoId: c?.videoId ?? c?.video?.id ?? null,
+        _origKey: c.key,
+      }));
+
+    if (!picked.length) return;
+
+    const minStart = Math.min(...picked.map((c) => c.start));
+    const normalized = picked
+      .map((c) => ({ ...c, relStart: c.start - minStart }))
+      .sort((a, b) => a.relStart - b.relStart);
+
+    clipClipboardRef.current = {
+      copiedAt: Date.now(),
+      count: normalized.length,
+      minStart,
+      items: normalized,
+    };
+  }
+
+  function pasteClipboardAtPlayhead() {
+    const clipb = clipClipboardRef.current;
+    if (!clipb?.items?.length) return;
+
+    pushUndo("paste");
+
+    const baseT = Math.max(0, Number(playheadRef.current ?? playhead) || 0);
+
+    const newClips = clipb.items.map((it) => {
+      let videoObj = it.video;
+      if (it.videoId != null && Array.isArray(libraryVideos) && libraryVideos.length) {
+        const fresh = libraryVideos.find((v) => String(v.id) === String(it.videoId));
+        if (fresh) videoObj = fresh;
       }
 
-      const s = Number(c.start) || 0;
-      return s >= t0 - EPS;
-    })
-    // keep selection order consistent (left->right)
-    .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-    .map((c) => c.key);
+      const kind = it.kind === "video" ? "video" : it.kind === "audio" ? "audio" : "video";
+      const track = kind === "video" ? 0 : Number(it.track) || 0;
 
-  setSelectionFromKeys(keys, { additive: false });
-}
+      return {
+        key: newClipKeyLike(it._origKey || `${kind}-${it.videoId || "x"}`),
+        kind,
+        track,
+        video: videoObj,
+        start: Math.max(0, baseT + (Number(it.relStart) || 0)),
+        sourceDuration: Number(it.sourceDuration) || Number(videoObj?.durationSeconds) || 0,
+        in: Number(it.in) || 0,
+        out: Number(it.out) || 0,
+      };
+    });
 
-function newClipKeyLike(oldKey) {
-  return `${oldKey}-P-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
+    setClipsSynced((prev) => [...prev, ...newClips]);
 
-function getSelectedOrActiveKeys() {
-  const sel = Array.from(selectedClipKeysRef.current || []);
-  if (sel.length) return sel;
-  return activeClipKey ? [activeClipKey] : [];
-}
-
-function copySelectedClips() {
-  const keys = getSelectedOrActiveKeys();
-  if (!keys.length) return;
-
-  const picked = clips
-    .filter((c) => c && keys.includes(c.key))
-    .map((c) => ({
-      // store everything we need to recreate the clip
-      kind: c.kind,
-      track: Number(c.track) || 0,
-      start: Number(c.start) || 0,
-      in: Number(c.in) || 0,
-      out: Number(c.out) || 0,
-      sourceDuration: Number(c.sourceDuration) || Number(c?.video?.durationSeconds) || 0,
-      video: c.video || null,
-      videoId: c?.video?.id ?? null,
-      _origKey: c.key,
-    }));
-
-  if (!picked.length) return;
-
-  const minStart = Math.min(...picked.map((c) => c.start));
-  const normalized = picked
-    .map((c) => ({ ...c, relStart: c.start - minStart }))
-    .sort((a, b) => a.relStart - b.relStart);
-
-  clipClipboardRef.current = {
-    copiedAt: Date.now(),
-    count: normalized.length,
-    minStart,
-    items: normalized,
-  };
-}
-
-function pasteClipboardAtPlayhead() {
-  const clipb = clipClipboardRef.current;
-  if (!clipb?.items?.length) return;
-
-  pushUndo("paste");
-
-  const baseT = Math.max(0, Number(playheadRef.current ?? playhead) || 0);
-
-  // Build new clips with new keys
-  const newClips = clipb.items.map((it) => {
-    // Rebind video object from library if available (prevents stale objects)
-    let videoObj = it.video;
-    if (it.videoId != null && Array.isArray(libraryVideos) && libraryVideos.length) {
-      const fresh = libraryVideos.find((v) => String(v.id) === String(it.videoId));
-      if (fresh) videoObj = fresh;
-    }
-
-    const kind = it.kind === "video" ? "video" : it.kind === "audio" ? "audio" : "video";
-    const track = kind === "video" ? 0 : Number(it.track) || 0;
-
-    return {
-      key: newClipKeyLike(it._origKey || `${kind}-${it.videoId || "x"}`),
-      kind,
-      track,
-      video: videoObj,
-      start: Math.max(0, baseT + (Number(it.relStart) || 0)),
-      sourceDuration: Number(it.sourceDuration) || Number(videoObj?.durationSeconds) || 0,
-      in: Number(it.in) || 0,
-      out: Number(it.out) || 0,
-    };
-  });
-
-  setClips((prev) => [...prev, ...newClips]);
-
-  // select pasted clips
-  const pastedKeys = new Set(newClips.map((c) => c.key));
-  setSelectedClipKeys(pastedKeys);
-  setActiveClipKey(newClips[newClips.length - 1]?.key || null);
-}
+    const pastedKeys = new Set(newClips.map((c) => c.key));
+    setSelectedClipKeys(pastedKeys);
+    setActiveClipKey(newClips[newClips.length - 1]?.key || null);
+  }
 
   function getSnapshot() {
     return {
@@ -391,49 +581,115 @@ function pasteClipboardAtPlayhead() {
   }
 
   useEffect(() => {
-  const onKeyDown = (e) => {
-    const key = (e.key || "").toLowerCase();
-    const tag = (e.target?.tagName || "").toLowerCase();
-    const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
-    if (isTyping) return;
+    return () => {
+      // stop clocks
+      stopAllClocks();
 
-    const mod = e.ctrlKey || e.metaKey;
-        // Copy: Ctrl/Cmd+C
-    if (mod && key === "c" && !e.shiftKey) {
-      e.preventDefault();
-      copySelectedClips();
+      for (const { el } of audioPoolRef.current.values()) {
+        try {
+          el.pause();
+        } catch {}
+        try {
+          el.removeAttribute("src");
+          el.load();
+        } catch {}
+        try {
+          el.remove();
+        } catch {}
+      }
+      audioPoolRef.current.clear();
+    };
+  }, []);
+
+  function stopLibraryPreview() {
+  const a = previewAudioRef.current;
+  if (!a) return;
+
+  try { a.pause(); } catch {}
+  try {
+    a.removeAttribute("src");
+    a.load();
+  } catch {}
+
+  setPreviewAudioId(null);
+}
+
+  async function toggleLibraryAudioPreview(v) {
+    if (!v?.id) return;
+    if (!isAudioMedia(v)) return;
+
+    const src = normalizeMediaUrl(streamUrl(v) || "");
+    if (!src) return;
+
+    const a = previewAudioRef.current;
+    if (!a) return;
+
+    // If clicking the same item that's currently previewing -> stop
+    if (String(previewAudioId) === String(v.id) && !a.paused) {
+      stopLibraryPreview();
       return;
     }
 
-    // Paste: Ctrl/Cmd+V
-    if (mod && key === "v" && !e.shiftKey) {
-      // IMPORTANT: don't steal your tool hotkey 'v' when not holding Ctrl/Cmd
-      e.preventDefault();
-      pasteClipboardAtPlayhead();
-      return;
+    // Otherwise start / switch preview
+    try {
+      a.pause();
+    } catch {}
+
+    setPreviewAudioId(v.id);
+
+    try {
+      a.src = src;
+      a.currentTime = 0;
+      a.muted = muted;
+      a.volume = clamp(Number(volume), 0, 1);
+
+      // play (ignore autoplay rejection)
+      const p = a.play?.();
+      if (p?.catch) p.catch(() => {});
+    } catch {
+      // if anything goes wrong, reset state
+      stopLibraryPreview();
     }
+  }
 
-    // Undo...
-    // Redo...
-  };
+  // Copy / Paste hotkeys
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const key = (e.key || "").toLowerCase();
+      const tag = (e.target?.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+      if (isTyping) return;
 
-  window.addEventListener("keydown", onKeyDown);
-  return () => window.removeEventListener("keydown", onKeyDown);
-}, [sequenceTitle, clips, playhead, audioLaneCount]);
+      const mod = e.ctrlKey || e.metaKey;
+
+      if (mod && key === "c" && !e.shiftKey) {
+        e.preventDefault();
+        copySelectedClips();
+        return;
+      }
+
+      if (mod && key === "v" && !e.shiftKey) {
+        e.preventDefault();
+        pasteClipboardAtPlayhead();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sequenceTitle, clips, playhead, audioLaneCount]);
 
   function applySnapshot(snap) {
     if (!snap) return;
     setSequenceTitle(String(snap.sequenceTitle || "Timeline"));
-    setClips(Array.isArray(snap.clips) ? snap.clips : []);
+    setClipsSynced(Array.isArray(snap.clips) ? snap.clips : []);
     setAudioLaneCount(clamp(Number(snap.audioLaneCount) || 1, 1, 5));
     setPlayhead(Math.max(0, Number(snap.playhead) || 0));
     playheadRef.current = Math.max(0, Number(snap.playhead) || 0);
 
-    // selection shouldn't be undone; clear it for sanity
     setSelectedClipKeys(new Set());
     setActiveClipKey(null);
 
-    // force viewer re-align
     loadedClipKeyRef.current = null;
     loadedSrcRef.current = "";
     requestAnimationFrame(() => {
@@ -444,13 +700,11 @@ function pasteClipboardAtPlayhead() {
   }
 
   function pushUndo(reason = "") {
-    // Don't record while hydrating initial load
     if (!didHydrateRef.current) return;
 
     const snap = getSnapshot();
     const stack = undoStackRef.current;
 
-    // prevent pushing identical snapshot back-to-back (cheap check)
     const last = stack[stack.length - 1];
     const same =
       last &&
@@ -463,7 +717,7 @@ function pasteClipboardAtPlayhead() {
       stack.push(snap);
       if (stack.length > UNDO_LIMIT) stack.splice(0, stack.length - UNDO_LIMIT);
       undoStackRef.current = stack;
-      redoStackRef.current = []; // new action clears redo history
+      redoStackRef.current = [];
     }
   }
 
@@ -488,108 +742,214 @@ function pasteClipboardAtPlayhead() {
     const next = stack.pop();
 
     undoStackRef.current.push(current);
-    if (undoStackRef.current.length > UNDO_LIMIT) undoStackRef.current.splice(0, undoStackRef.current.length - UNDO_LIMIT);
+    if (undoStackRef.current.length > UNDO_LIMIT)
+      undoStackRef.current.splice(0, undoStackRef.current.length - UNDO_LIMIT);
 
     applySnapshot(next);
   }
 
-  // -------- Route -> ensure project id exists --------
+  // Ensure we have a valid projectId in the URL
   useEffect(() => {
-    if (!routeProjectId) {
+    const rid = String(routeProjectId || "").trim();
+    const valid = rid && rid !== "undefined" && rid !== "null";
+
+    if (!valid) {
       const newId = makeProjectId();
       nav(`/generate/edit/${newId}`, { replace: true });
       return;
     }
-    setProjectId(routeProjectId);
+
+    setProjectId(rid);
   }, [routeProjectId, nav]);
 
-  // -------- Load project on id change --------
   useEffect(() => {
-    if (!projectId) return;
+  console.log("[CLIPS state changed]", {
+    total: clips.length,
+    audio: clips.filter((c) => c?.kind === "audio").length,
+    video: clips.filter((c) => c?.kind === "video").length,
+    sample: clips.slice(0, 5).map((c) => ({
+      key: c.key,
+      kind: c.kind,
+      track: c.track,
+      start: c.start,
+      in: c.in,
+      out: c.out,
+      videoId: c?.videoId ?? c?.video?.id ?? null,
+    })),
+  });
+}, [clips]);
 
-    didHydrateRef.current = false;
-    setDirty(false);
+  // -------- Load project on id change --------
+useEffect(() => {
+  if (!projectId) return;
 
-    const p = loadProjectById(projectId);
-    if (p) {
-      setSequenceTitle(String(p.sequenceTitle || "Timeline"));
+  didHydrateRef.current = false;
+  setDirty(false);
+  setIsEditingTitle(false);
 
-      const loaded = Array.isArray(p.clips) ? p.clips : Array.isArray(p.timeline) ? p.timeline : [];
+  // optional but helpful: reset undo/redo for this project load
+  undoStackRef.current = [];
+  redoStackRef.current = [];
 
-      const migrated = loaded
-        .filter(Boolean)
-        .map((c) => {
-          if (c.kind && Number.isFinite(Number(c.track))) return c;
-          return { ...c, kind: "video", track: 0 };
-        })
-        .map((c) => {
-          if (c?.kind === "video") return { ...c, track: 0 };
-          return c;
-        });
+  const p = loadProjectById(projectId);
 
-      setClips(migrated);
+  if (p?.__parseFailed) {
+    // DO NOT overwrite. Keep empty state and show an error.
+    setLibErr("Saved project data is corrupted and could not be loaded. Check console for details.");
+    setClipsSynced([]);
+    setAudioLaneCount(1);
+    setPlayhead(0);
+    playheadRef.current = 0;
+    return;
+  }
 
-      // ✅ Prefer saved lane count (keeps empty lanes), fallback to fit existing audio clips
-      const savedLaneCount = Number(p.audioLaneCount);
-      if (Number.isFinite(savedLaneCount) && savedLaneCount > 0) {
-        setAudioLaneCount(clamp(savedLaneCount, 1, 5));
-      } else {
-        const maxAudioTrack = migrated
-          .filter((c) => c?.kind === "audio")
-          .reduce((m, c) => Math.max(m, Number(c.track) || 0), 0);
-        setAudioLaneCount(clamp(maxAudioTrack + 1, 1, 5));
-      }
+  if (p) {
+    // ✅ hydrate title FIRST (this was missing)
+    const loadedTitle =
+      String(p.sequenceTitle || "").trim() ||
+      getIndexedProjectTitle(projectId) ||
+      "Timeline";
 
-      setPlayhead(Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0);
-    } else {
-      const indexedTitle = getIndexedProjectTitle(projectId);
+    setSequenceTitle(loadedTitle);
 
-      const initialTitle = indexedTitle || "Timeline";
-      setSequenceTitle(initialTitle);
+    const loadedAny =
+    Array.isArray(p.clips) ? p.clips :
+    Array.isArray(p.timeline) ? p.timeline :
+    [];
 
-      const initial = {
-        id: projectId,
-        sequenceTitle: initialTitle,
-        updatedAt: Date.now(),
-        playhead: 0,
-        clips: [],
-        audioLaneCount: 1,
-      };
+    // ✅ normalize: accept both "lite" and older "full" shapes
+    const normalizedLite = loadedAny
+      .filter(Boolean)
+      .map((c) => {
+        const kind = c?.kind === "audio" ? "audio" : "video";
+        const videoId = c?.videoId ?? c?.video?.id ?? null;
 
-      saveProjectById(projectId, initial);
+        const track = kind === "video" ? 0 : clamp(Number(c?.track) || 0, 0, 4);
 
-      const idx = loadProjectIndex();
-      const nextIdx = [
-        { id: projectId, sequenceTitle: initialTitle, updatedAt: initial.updatedAt },
-        ...idx.filter((x) => x?.id !== projectId),
-      ];
-      saveProjectIndex(nextIdx);
-    }
+        const start = Math.max(0, Number(c?.start) || 0);
+        const in0 = Math.max(0, Number(c?.in) || 0);
+        const out0 = Math.max(in0, Number(c?.out) || 0);
 
-    // Reset viewer bookkeeping on load
-    loadedClipKeyRef.current = null;
-    loadedSrcRef.current = "";
-    wantedPlayRef.current = false;
-    setIsPlaying(false);
+        const srcDur = Math.max(
+          0,
+          Number(c?.sourceDuration || c?.video?.durationSeconds || 0) || 0
+        );
 
-    // Hard-stop the element too (prevents “phantom pause/resume” races on navigation)
-    const v = videoRef.current;
-    if (v) {
-      try {
-        v.pause();
-      } catch {}
-    }
+        const key =
+          String(c?.key || "").trim() ||
+          `${kind}-${videoId || "x"}-${track}-${start}-${Date.now()}-${Math.random()
+            .toString(16)
+            .slice(2)}`;
 
-    requestAnimationFrame(() => {
-      didHydrateRef.current = true;
-    });
-  }, [projectId]);
+        return { key, kind, track, start, in: in0, out: out0, sourceDuration: srcDur, videoId };
+      });
+
+  // ✅ hydrate: bind video objects if available
+  const migrated = normalizedLite.map((c) => {
+  const bound =
+    c.videoId != null && Array.isArray(libraryVideos)
+      ? libraryVideos.find((v) => String(v.id) === String(c.videoId))
+      : null;
+
+  // ✅ IMPORTANT: never leave video null if we have a videoId
+  // This allows streamUrl({id}) to work immediately, even before library loads.
+  const placeholder =
+    c.videoId != null
+      ? {
+          id: c.videoId,
+          title: c.kind === "audio" ? "(audio…)" : "(video…)",
+          // include a media_type hint if your API uses it
+          media_type: c.kind === "audio" ? "audio" : "video",
+        }
+      : null;
+
+  return {
+    ...c,
+    videoId: c.videoId ?? bound?.id ?? null,
+    video: bound || placeholder,
+  };
+});
+
+  setClipsSynced(migrated);
+
+  // ✅ ensure audio lanes
+  const requiredFromClips =
+    migrated
+      .filter((c) => c?.kind === "audio")
+      .reduce((m, c) => Math.max(m, Number(c.track) || 0), -1) + 1;
+
+  const savedLaneCount = Number(p.audioLaneCount);
+  const base = Number.isFinite(savedLaneCount) && savedLaneCount > 0 ? savedLaneCount : 1;
+
+  setAudioLaneCount(clamp(Math.max(base, requiredFromClips || 1), 1, 5));
+
+    const ph = Number.isFinite(Number(p.playhead)) ? Math.max(0, Number(p.playhead)) : 0;
+    setPlayhead(ph);
+    playheadRef.current = ph;
+  } else {
+    // new project
+    const indexedTitle = getIndexedProjectTitle(projectId);
+    const initialTitle = indexedTitle || "Timeline";
+
+    setSequenceTitle(initialTitle);
+
+    const initial = {
+      id: projectId,
+      sequenceTitle: initialTitle,
+      updatedAt: Date.now(),
+      playhead: 0,
+      clips: [],
+      audioLaneCount: 1,
+    };
+
+    saveProjectById(projectId, initial);
+
+    const idx = loadProjectIndex();
+    const nextIdx = [
+      { id: projectId, sequenceTitle: initialTitle, updatedAt: initial.updatedAt },
+      ...idx.filter((x) => String(x?.id) !== String(projectId)),
+    ];
+    saveProjectIndex(nextIdx);
+
+    setClipsSynced([]);
+    setAudioLaneCount(1);
+    setPlayhead(0);
+    playheadRef.current = 0;
+  }
+
+  // reset player state
+  loadedClipKeyRef.current = null;
+  loadedSrcRef.current = "";
+  wantedPlayRef.current = false;
+  setIsPlaying(false);
+
+  // clear any audios (so they don't keep crackling between projects)
+  for (const key of Array.from(audioPoolRef.current.keys())) {
+    unloadAndRemoveAudioKey(key);
+  }
+
+  const v = videoRef.current;
+  if (v) {
+    try {
+      v.pause();
+    } catch {}
+  }
+
+  requestAnimationFrame(() => {
+    // seed undo with the freshly loaded snapshot
+    undoStackRef.current = [getSnapshot()];
+    redoStackRef.current = [];
+    didHydrateRef.current = true;
+  });
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [projectId]);
 
   // -------- Mark dirty when editing (after hydrate) --------
   useEffect(() => {
     if (!didHydrateRef.current) return;
     setDirty(true);
-  }, [sequenceTitle, clips, playhead]);
+  }, [sequenceTitle, clips, playhead, audioLaneCount]);
 
   function rectsIntersect(a, b) {
     return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
@@ -602,7 +962,6 @@ function pasteClipboardAtPlayhead() {
       return base;
     });
 
-    // Keep "active" sensible: last selected if any, else null
     const arr = Array.from(keys || []);
     if (arr.length) setActiveClipKey(arr[arr.length - 1]);
     else if (!additive) setActiveClipKey(null);
@@ -612,10 +971,7 @@ function pasteClipboardAtPlayhead() {
     const next = additive ? new Set(selectedClipKeysRef.current || []) : new Set();
     for (const k of keys || []) next.add(k);
 
-    // state
     setSelectedClipKeys(next);
-
-    // ✅ ref (so drag logic sees it immediately, same frame)
     selectedClipKeysRef.current = next;
 
     const arr = Array.from(next);
@@ -639,29 +995,23 @@ function pasteClipboardAtPlayhead() {
     return `${sign}${fmtTime(Math.abs(s))}`;
   }
 
-  function formatTrimTooltip({ side, inTime, outTime, length, deltaLength, isRipple }) {
+  function formatTrimTooltip({ side, length, deltaLength, isRipple }) {
     const sideLabel = side === "l" ? (isRipple ? "Ripple Trim" : "Trim") : isRipple ? "Ripple Trim" : "Trim";
     const deltaLabel = Math.abs(deltaLength) > 1e-6 ? ` (${fmtDelta(deltaLength)})` : "";
     return `${sideLabel}: ${fmtTime(length)}${deltaLabel}`;
   }
 
-  function addAudioLane() 
-  {
+  function addAudioLane() {
     pushUndo("add audio lane");
     setAudioLaneCount((n) => clamp((Number(n) || 1) + 1, 1, 5));
   }
-  
 
   function removeAudioLane(trackToRemove) {
-    pushUndo("add audio lane");
-    // Protect A1 (track 0) so you never end up with 0 audio lanes
+    pushUndo("remove audio lane");
     if (Number(trackToRemove) === 0) return;
 
-    setClips((prev) => {
+    setClipsSynced((prev) => {
       const t = Number(trackToRemove);
-
-      // 1) delete clips that are on the removed lane
-      // 2) shift any clips above it down by 1 (A4 -> A3, etc)
       return prev
         .filter((c) => !(c?.kind === "audio" && Number(c.track) === t))
         .map((c) => {
@@ -678,11 +1028,9 @@ function pasteClipboardAtPlayhead() {
   function onLanesPointerDown(e) {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
-    if (tool === "razor") return; // keep lanes inert in razor mode, like Premiere
+    if (tool === "razor") return;
 
-      // ✅ Track Select Forward: clicking empty lane space selects forward from mouse time
     if (tool === "trackFwd") {
-      // Only when clicking "empty" lanes background
       if (e.target?.closest?.(".genEditClip")) return;
       if (e.target?.closest?.(".genEditPlayheadHandle")) return;
 
@@ -694,7 +1042,6 @@ function pasteClipboardAtPlayhead() {
 
       const t = getTimeFromClientX(e.clientX);
 
-      // Shift = all lanes
       selectTrackForwardFrom({
         kind: lane.kind,
         track: Number(lane.track) || 0,
@@ -705,7 +1052,6 @@ function pasteClipboardAtPlayhead() {
       return;
     }
 
-    // Only start box-select when clicking "empty" lanes background
     if (e.target?.closest?.(".genEditClip")) return;
     if (e.target?.closest?.(".genEditPlayheadHandle")) return;
 
@@ -717,7 +1063,6 @@ function pasteClipboardAtPlayhead() {
 
     boxStartRef.current = { x: e.clientX, y: e.clientY };
 
-    // init a tiny box so it appears immediately
     const stack = timelineOriginRef.current;
     if (stack) {
       const r = stack.getBoundingClientRect();
@@ -749,7 +1094,6 @@ function pasteClipboardAtPlayhead() {
 
       setBoxSel({ left, top, width, height });
 
-      // ✅ LIVE highlight: compute what clips intersect the marquee *right now*
       const selRectClient = {
         left: Math.min(x1, x2),
         top: Math.min(y1, y2),
@@ -788,10 +1132,9 @@ function pasteClipboardAtPlayhead() {
       const dragDx = Math.abs(x2 - x1);
       const dragDy = Math.abs(y2 - y1);
 
-      // Treat as a "click" if the drag was tiny -> clear (unless shift, then do nothing)
       if (dragDx < 3 && dragDy < 3) {
         setBoxSel(null);
-        setBoxHoverKeys(new Set()); // ✅
+        setBoxHoverKeys(new Set());
         if (!boxAdditiveRef.current) clearSelection();
         return;
       }
@@ -803,7 +1146,6 @@ function pasteClipboardAtPlayhead() {
         bottom: Math.max(y1, y2),
       };
 
-      // Find any clip element that intersects the box
       const els = Array.from(document.querySelectorAll(".genEditClip[data-clip-key]"));
       const hitKeys = [];
 
@@ -818,22 +1160,12 @@ function pasteClipboardAtPlayhead() {
 
       setSelectionFromKeys(hitKeys, { additive: boxAdditiveRef.current });
       setBoxSel(null);
-      setBoxHoverKeys(new Set()); // ✅ clear highlight after selection
+      setBoxHoverKeys(new Set());
     };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
-  }
-
-  function getMediaType(v) {
-    // support both server styles
-    return String(v?.media_type ?? v?.mediaType ?? "").toLowerCase().trim();
-  }
-
-  function isAudioMedia(v) {
-    const mt = getMediaType(v);
-    return mt === "audio" || mt.startsWith("audio/");
   }
 
   // -- Selection --
@@ -861,34 +1193,36 @@ function pasteClipboardAtPlayhead() {
 
   // -------- Save project --------
   async function saveProjectNow() {
-    if (!projectId) return;
+  if (!projectId) return;
 
-    try {
-      setIsSaving(true);
+  try {
+    setIsSaving(true);
 
-      const payload = {
-        id: projectId,
-        sequenceTitle: String(sequenceTitle || "Timeline"),
-        updatedAt: Date.now(),
-        playhead: Number(playhead || 0),
-        clips: Array.isArray(clips) ? clips : [],
-        audioLaneCount: clamp(Number(audioLaneCount) || 1, 1, 5),
-      };
+    const payload = {
+      id: projectId,
+      sequenceTitle: String(sequenceTitleRef.current || "Timeline"),
+      updatedAt: Date.now(),
+      playhead: Number(playheadStateRef.current || 0),
+      clips: Array.isArray(clipsRef.current) ? clipsRef.current : [],
+      audioLaneCount: clamp(Number(audioLaneCountRef.current) || 1, 1, 5),
+    };
 
-      saveProjectById(projectId, payload);
+    console.log("[SAVE payload]", payload);
 
-      const idx = loadProjectIndex();
-      const nextIdx = [
-        { id: projectId, sequenceTitle: payload.sequenceTitle, updatedAt: payload.updatedAt },
-        ...idx.filter((x) => x?.id !== projectId),
-      ];
-      saveProjectIndex(nextIdx);
+    saveProjectById(projectId, payload);
 
-      setDirty(false);
-    } finally {
-      setIsSaving(false);
-    }
+    const idx = loadProjectIndex();
+    const nextIdx = [
+      { id: projectId, sequenceTitle: payload.sequenceTitle, updatedAt: payload.updatedAt },
+      ...idx.filter((x) => x?.id !== projectId),
+    ];
+    saveProjectIndex(nextIdx);
+
+    setDirty(false);
+  } finally {
+    setIsSaving(false);
   }
+}
 
   // -------- AUTH / LIBRARY --------
   useEffect(() => {
@@ -927,15 +1261,10 @@ function pasteClipboardAtPlayhead() {
 
         const arr = Array.isArray(vids) ? vids : [];
         setLibraryVideos(arr);
-        console.log(
-          "LIBRARY:",
-          arr.map(v => ({ id: v.id, title: v.title, media_type: v.media_type, filename: v.filename, path: v.path, url: v.url }))
-        );
 
         if (!selectedVideo && arr.length) {
           const firstVideo = arr.find((v) => !isAudioMedia(v));
           const firstAudio = arr.find((v) => isAudioMedia(v));
-          // default to a video if possible, otherwise audio
           setSelectedVideo(firstVideo || firstAudio || null);
         }
 
@@ -961,13 +1290,15 @@ function pasteClipboardAtPlayhead() {
   // Rebind stale video objects
   useEffect(() => {
     if (!libraryVideos.length) return;
-    setClips((prev) =>
+
+    setClipsSynced((prev) =>
       prev.map((c) => {
-        if (c?.kind !== "video") return c;
         const vid = c?.video;
-        if (!vid?.id) return c;
-        const fresh = libraryVideos.find((v) => String(v.id) === String(vid.id));
-        return fresh ? { ...c, video: fresh } : c;
+        const id = c?.videoId ?? vid?.id;
+        if (!id) return c;
+
+        const fresh = libraryVideos.find((v) => String(v.id) === String(id));
+        return fresh ? { ...c, videoId: id, video: fresh } : c;
       })
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1019,10 +1350,6 @@ function pasteClipboardAtPlayhead() {
   }
 
   // -------- Timeline metrics --------
-  const clipsSorted = useMemo(() => {
-    return clips.slice().sort((a, b) => a.start - b.start || (Number(b.track) || 0) - (Number(a.track) || 0));
-  }, [clips]);
-
   const timelineEnd = useMemo(() => {
     if (!clipsSorted.length) return 0;
     return Math.max(...clipsSorted.map((c) => (Number(c.start) || 0) + clipLen(c)));
@@ -1039,15 +1366,12 @@ function pasteClipboardAtPlayhead() {
 
     const prevW = prevTimelineWidthRef.current;
 
-    // Only intervene when the content got smaller
     if (timelineWidth < prevW - 1) {
       requestAnimationFrame(() => {
         const maxScroll = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
 
-        // If we were scrolled past the new end, clamp
         if (viewport.scrollLeft > maxScroll) viewport.scrollLeft = maxScroll;
 
-        // Optional (nice): keep playhead comfortably in view
         const px = (playheadRef.current ?? playhead) * PPS;
         const desired = Math.max(0, px - viewport.clientWidth * 0.35);
         viewport.scrollLeft = Math.min(maxScroll, desired);
@@ -1060,116 +1384,123 @@ function pasteClipboardAtPlayhead() {
   function clipCoversTime(c, t) {
     const s = Number(c.start) || 0;
     const e = s + clipLen(c);
-    return t >= s && t < e;
+    const EPS = 0.03; // 30ms grace
+    return t >= s && t < e - EPS;
   }
 
-  function unloadAudioElement(a) {
-  if (!a) return;
-  try { a.pause(); } catch {}
-  try {
-    a.removeAttribute("src");   // hard unload (prevents “leaking” old audio)
-    a.load();
-  } catch {}
-  loadedAudioClipKeyRef.current = null;
-  loadedAudioSrcRef.current = "";
-  desiredAudioKeyRef.current = null;
-}
+  function audioClipCoversTime(c, t) {
+    const s = Number(c.start) || 0;
+    const e = s + clipLen(c);
 
-// Lightweight “what audio should be active at time t?”
-function getDesiredAudioAtTime(t) {
-  const timelineT = Math.max(0, Number(t) || 0);
-  const clip = findAudioClipAtTime(timelineT);
-  if (!clip || !clip.video) return null;
+    // Keep audio alive slightly past the edge to avoid thrash
+    const IN_PAD = 0.01;
+    const OUT_PAD = 0.01; // ✅ slightly larger pad -> fewer stop/start crackles
+    return t >= s - IN_PAD && t < e + OUT_PAD;
+  }
 
-  const src = streamUrl(clip.video) || "";
-  if (!src) return null;
+  function ensureAudioElementForKey(key) {
+    let entry = audioPoolRef.current.get(key);
+    if (entry?.el) return entry;
 
-  const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
-  const targetTime = (Number(clip.in) || 0) + local;
+    const host = audioHostRef.current;
+    const el = document.createElement("audio");
+    el.preload = "auto";
+    el.style.display = "none";
+    el.playsInline = true;
 
-  return { clip, src, targetTime };
-}
+    // ✅ helps some browsers with crackles during rapid play/pause
+    try {
+      el.crossOrigin = "anonymous";
+    } catch {}
 
-  // During playback: don’t reload every tick. Only:
-  // - swap if desired clip key changed
-  // - or drift is “meaningful”
-  // - and throttle small corrections a bit
-  async function syncAudioToTimelineTime(t, { autoplay } = { autoplay: false }) {
-    const a = audioRef.current;
-    if (!a) return;
+    try {
+      host?.appendChild(el);
+    } catch {}
 
-    const desired = getDesiredAudioAtTime(t);
+    entry = {
+      el,
+      src: "",
+      srcNorm: "",
+      swapping: false,
+      lastSyncAt: 0,
+      lastWantedAt: performance.now(),
+      everPlayed: false,
+    };
+    audioPoolRef.current.set(key, entry);
+    return entry;
+  }
 
-    // No audio under playhead => HARD stop/unload (no random audio)
-    if (!desired) {
-      if (loadedAudioClipKeyRef.current != null || (a.currentSrc || "")) {
-        unloadAudioElement(a);
-      } else {
-        try { a.pause(); } catch {}
+  function unloadAndRemoveAudioKey(key) {
+    const entry = audioPoolRef.current.get(key);
+    if (!entry) return;
+
+    const a = entry.el;
+
+    try {
+      a.pause();
+    } catch {}
+    try {
+      a.removeAttribute("src");
+      a.load();
+    } catch {}
+    try {
+      a.remove();
+    } catch {}
+
+    audioPoolRef.current.delete(key);
+  }
+
+  function desiredAudiosAtTime(t) {
+    const timelineT = Math.max(0, Number(t) || 0);
+
+    const candidates = clipsSorted.filter((c) => c?.kind === "audio" && audioClipCoversTime(c, timelineT));
+    if (!candidates.length) return [];
+
+    // top-most tracks first (higher track index wins), then later starts
+    candidates.sort(
+      (a, b) =>
+        (Number(b.track) || 0) - (Number(a.track) || 0) ||
+        (Number(b.start) || 0) - (Number(a.start) || 0)
+    );
+
+    const out = [];
+    for (const clip of candidates) {
+      const media = resolveMediaForClip(clip);
+      if (!media) continue;
+
+      const srcRaw = streamUrl(media) || "";
+      const src = normalizeMediaUrl(srcRaw);
+      if (!src) continue;
+
+      const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
+      const targetTime = (Number(clip.in) || 0) + local;
+
+      out.push({ clip, src, targetTime });
+    }
+    return out;
+  }
+
+  // keep mute/vol applied to video + all audio elements
+  function applyMuteVolAll() {
+    const vv = videoRef.current;
+    try {
+      if (vv) {
+        vv.muted = muted;
+        vv.volume = clamp(Number(volume), 0, 1);
       }
-      return;
+    } catch {}
+
+    for (const { el } of audioPoolRef.current.values()) {
+      try {
+        el.muted = muted;
+        el.volume = clamp(Number(volume), 0, 1);
+      } catch {}
     }
-
-    // Track what we WANT under the playhead
-    desiredAudioKeyRef.current = desired.clip.key;
-
-    const needsSwap =
-      loadedAudioClipKeyRef.current !== desired.clip.key ||
-      loadedAudioSrcRef.current !== desired.src ||
-      (a.currentSrc || "") !== desired.src;
-
-    // Swap only when needed
-    if (needsSwap) {
-      await ensureAudioLoadedForTimelineTime(t, { autoplay });
-      return;
-    }
-
-    // Same clip already loaded: only correct drift occasionally
-    const now = performance.now();
-    const cur = Number(a.currentTime || 0);
-    const drift = Math.abs(cur - desired.targetTime);
-
-    // Throttle micro-seeks and only fix if noticeably off
-    if (drift > 0.12 && (now - lastAudioSyncAtRef.current) > 120) {
-      lastAudioSyncAtRef.current = now;
-      try { a.currentTime = desired.targetTime; } catch {}
-    }
-
-    // If we should be playing, ensure it stays playing (but only if audio exists)
-    if ((autoplay || wantedPlayRef.current) && a.paused) {
-      const p = a.play?.();
-      if (p?.catch) p.catch(() => {});
-    }
-  }
-
-  function findAudioClipAtTime(t) {
-    const candidates = clipsSorted.filter((c) => c?.kind === "audio" && clipCoversTime(c, t));
-    if (!candidates.length) return null;
-
-    // Priority: higher track first, then latest-starting (so overlaps feel sane)
-    candidates.sort((a, b) => (Number(b.track) || 0) - (Number(a.track) || 0) || (Number(b.start) || 0) - (Number(a.start) || 0));
-    return candidates[0];
-  }
-
-  function findNextAudioStart(afterT, excludeKey = null) {
-    const t = Number(afterT) || 0;
-    const EPS = 1e-6;
-    let best = null;
-
-    for (const c of clipsSorted) {
-      if (c?.kind !== "audio") continue;
-      if (excludeKey && c.key === excludeKey) continue;
-
-      const s = Number(c.start) || 0;
-      if (s >= t - EPS && (best == null || s < best)) best = s;
-    }
-    return best;
   }
 
   function findVideoClipAtTime(t) {
     const candidates = clipsSorted.filter((c) => c?.kind === "video" && clipCoversTime(c, t));
     if (!candidates.length) return null;
-    // prefer the latest-starting clip if overlaps exist
     candidates.sort((a, b) => (Number(b.start) || 0) - (Number(a.start) || 0));
     return candidates[0];
   }
@@ -1204,7 +1535,7 @@ function getDesiredAudioAtTime(t) {
 
   function findNextVideoStart(afterT, excludeKey = null) {
     const t = Number(afterT) || 0;
-    const EPS = 1e-6; // allow equality (butt-join)
+    const EPS = 1e-6;
     let best = null;
 
     for (const c of clipsSorted) {
@@ -1228,10 +1559,6 @@ function getDesiredAudioAtTime(t) {
     return best;
   }
 
-  /**
-   * ✅ FIX: “End of timeline” means the playhead is at/after timelineEnd,
-   * NOT “there is no next clip start” (that incorrectly flagged *inside the last clip*).
-   */
   function atTimelineEnd(t) {
     const tt = Number(t) || 0;
     return tt >= Math.max(0, Number(timelineEnd) || 0) - 0.04;
@@ -1239,14 +1566,13 @@ function getDesiredAudioAtTime(t) {
 
   const currentVideoClip = useMemo(() => findVideoClipAtTime(playhead), [clipsSorted, playhead]);
 
-  // ✅ IMPORTANT: viewer src is ONLY based on timeline clip at playhead
   const viewerSrc = useMemo(() => {
     const c = currentVideoClip;
-    if (!c?.video) return "";
-    return streamUrl(c.video) || "";
-  }, [currentVideoClip]);
+    const media = resolveMediaForClip(c);
+    if (!media) return "";
+    return streamUrl(media) || "";
+  }, [currentVideoClip, libraryVideos]);
 
-  // ✅ Measure time from time-origin surface (time stack)
   function getTimeFromClientX(clientX) {
     const viewport = timelineViewportRef.current;
     if (!viewport) return 0;
@@ -1274,83 +1600,79 @@ function getDesiredAudioAtTime(t) {
     return null;
   }
 
-  // ---------- Ripple delete helpers ----------
-  function laneKeyOf(c) {
-    return `${c?.kind}:${Number(c?.track) || 0}`;
+  function snapToPlayhead(nextStart, movingKey, snapSec = EDGE_SNAP_SEC) {
+    const moving = clips.find((c) => c.key === movingKey);
+    if (!moving) return nextStart;
+
+    const len = clipLen(moving);
+    const ph = Number(playheadRef.current ?? playhead) || 0;
+
+    const startD = Math.abs(nextStart - ph);
+    const endD = Math.abs(nextStart + len - ph);
+
+    if (startD <= snapSec && startD <= endD) return ph;        // snap START to playhead
+    if (endD <= snapSec) return ph - len;                      // snap END to playhead
+    return nextStart;
   }
 
-  function buildRipplePlan(prevClips, keysToRemove) {
-    const removeSet = new Set(keysToRemove || []);
-    const removedByLane = new Map();
+  function getLaneEdgeTargets({ kind, track, excludeKey }) {
+  const out = [];
+  for (const c of clipsSorted) {
+    if (!c) continue;
+    if (c.key === excludeKey) continue;
+    if (c.kind !== kind) continue;
+    if ((Number(c.track) || 0) !== (Number(track) || 0)) continue;
 
-    // Collect removed intervals per lane
-    for (const c of prevClips) {
-      if (!c || !removeSet.has(c.key)) continue;
-      const lk = laneKeyOf(c);
-      const s = Number(c.start) || 0;
-      const e = s + clipLen(c);
-      if (e <= s) continue;
+    const s = Number(c.start) || 0;
+    const e = s + clipLen(c);
+    out.push(s, e);
+  }
+  return out;
+}
 
-      if (!removedByLane.has(lk)) removedByLane.set(lk, []);
-      removedByLane.get(lk).push({ start: s, end: e, len: e - s });
+/**
+ * Magnetic snapping for a moving clip:
+ * - snaps moving START to lane edges
+ * - snaps moving END to lane edges (by adjusting start)
+ * - lane-aware: only snaps within same kind+track
+ * - optional: snap to playhead too
+ */
+  function snapToMagneticLane(nextStart, movingKey, lane, { includePlayhead = true } = {}) {
+    const moving = clips.find((c) => c.key === movingKey);
+    if (!moving) return nextStart;
+
+    const kind = lane?.kind ?? moving.kind;
+    const track = Number(lane?.track ?? moving.track) || 0;
+
+    const movingLen = clipLen(moving);
+    const movingStart = Number(nextStart) || 0;
+    const movingEnd = movingStart + movingLen;
+
+    const targets = getLaneEdgeTargets({ kind, track, excludeKey: movingKey });
+
+    // optional: playhead as a snap target too
+    if (includePlayhead) {
+      const ph = Number(playheadRef.current ?? playhead) || 0;
+      targets.push(ph);
     }
 
-    // Normalize: sort + merge overlaps (so multiple deletions don't double-shift)
-    const planByLane = new Map();
-    for (const [lk, intervals] of removedByLane.entries()) {
-      const sorted = intervals.slice().sort((a, b) => a.start - b.start || a.end - b.end);
+    let best = null;
 
-      const merged = [];
-      for (const it of sorted) {
-        const last = merged[merged.length - 1];
-        if (!last) merged.push({ ...it });
-        else if (it.start <= last.end + 1e-6) {
-          // overlap/abut -> merge
-          last.end = Math.max(last.end, it.end);
-          last.len = last.end - last.start;
-        } else {
-          merged.push({ ...it });
-        }
+    for (const target of targets) {
+      // snap START to target
+      const dStart = Math.abs(movingStart - target);
+      if (dStart <= EDGE_SNAP_SEC && (!best || dStart < best.dist)) {
+        best = { value: target, dist: dStart };
       }
 
-      // Precompute cumulative shifts for fast lookup
-      let cum = 0;
-      const steps = merged.map((m) => {
-        const step = { ...m, shiftAfter: cum + m.len };
-        cum += m.len;
-        return step;
-      });
-
-      planByLane.set(lk, { intervals: steps, total: cum });
-    }
-
-    return { removeSet, planByLane };
-  }
-
-  function rippleShiftForTime(intervals, t) {
-    // intervals are merged, in ascending time, with "shiftAfter" cumulative included
-    const tt = Number(t) || 0;
-    let shift = 0;
-
-    for (const it of intervals) {
-      // If time is after this interval, accumulate its length
-      if (tt >= it.end - 1e-6) {
-        shift = it.shiftAfter;
-        continue;
+      // snap END to target (adjust start)
+      const dEnd = Math.abs(movingEnd - target);
+      if (dEnd <= EDGE_SNAP_SEC && (!best || dEnd < best.dist)) {
+        best = { value: target - movingLen, dist: dEnd };
       }
-      break;
     }
 
-    return shift;
-  }
-
-  function isTimeInsideAny(intervals, t) {
-    const tt = Number(t) || 0;
-    for (const it of intervals) {
-      if (tt >= it.start - 1e-6 && tt <= it.end + 1e-6) return it;
-      if (tt < it.start) break;
-    }
-    return null;
+    return best ? Math.max(0, best.value) : nextStart;
   }
 
   function snapToEdges(nextStart, movingKey) {
@@ -1375,7 +1697,8 @@ function getDesiredAudioAtTime(t) {
       }
       for (const target of [s, e]) {
         const d = Math.abs(movingEnd - target);
-        if (d <= EDGE_SNAP_SEC && (!best || d < best.dist)) best = { value: target - movingLen, dist: d };
+        if (d <= EDGE_SNAP_SEC && (!best || d < best.dist))
+          best = { value: target - movingLen, dist: d };
       }
     }
 
@@ -1390,11 +1713,9 @@ function getDesiredAudioAtTime(t) {
   function snapRazorTime(t) {
     const tt = Math.max(0, Number(t) || 0);
 
-    // Snap targets: playhead, whole seconds, and all clip edges
     const targets = [];
-
     targets.push(Number(playheadRef.current ?? playhead) || 0);
-    targets.push(snapSeconds(tt, 1)); // whole seconds
+    targets.push(snapSeconds(tt, 1));
 
     for (const c of clipsSorted) {
       const s = Number(c.start) || 0;
@@ -1423,35 +1744,23 @@ function getDesiredAudioAtTime(t) {
     setRazorHoverT(null);
   }
 
-  // --------- Viewer: apply mute/vol immediately ---------
-  function applyMuteVol() {
-    const vv = videoRef.current;
-    const aa = audioRef.current;
-
-    try {
-      if (vv) {
-        vv.muted = muted;
-        vv.volume = clamp(Number(volume), 0, 1);
-      }
-    } catch {}
-
-    try {
-      if (aa) {
-        aa.muted = muted;
-        aa.volume = clamp(Number(volume), 0, 1);
-      }
-    } catch {}
-  }
-
   useEffect(() => {
-    applyMuteVol();
+    applyMuteVolAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [muted, volume]);
 
-  // Robust wait helper
+  useEffect(() => {
+    const a = previewAudioRef.current;
+    if (!a) return;
+    try {
+      a.muted = muted;
+      a.volume = clamp(Number(volume), 0, 1);
+    } catch {}
+  }, [muted, volume]);
+
   function waitForEvent(el, evt, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
-      if (!el) return reject(new Error("no video element"));
+      if (!el) return reject(new Error("no media element"));
       let done = false;
 
       const ok = () => {
@@ -1485,7 +1794,133 @@ function getDesiredAudioAtTime(t) {
     });
   }
 
-  // Core: ensure correct clip loaded and seeked for a given timeline time
+  /**
+   * ✅ BIG AUDIO FIX:
+   * - No more aggressive currentTime yanks while playing (that causes crackles).
+   * - Hysteresis for removing audio elements to avoid stop/start jitter.
+   * - Only hard-resync when drift is large OR when scrubbing/paused.
+   */
+  async function syncAllAudioToTimelineTime(t, { autoplay } = { autoplay: false }) {
+    const desired = desiredAudiosAtTime(t);
+
+    if (!desired.length) {
+    for (const { el } of audioPoolRef.current.values()) {
+      try { el.pause(); } catch {}
+    }
+    return;
+  }
+
+
+    const desiredKeys = new Set(desired.map((d) => d.clip.key));
+
+    const now = performance.now();
+
+    // mark wanted
+    for (const d of desired) {
+      const entry = ensureAudioElementForKey(d.clip.key);
+      entry.lastWantedAt = now;
+    }
+
+    // ✅ don't instantly remove audios: pause after ~700ms not-wanted, remove after ~6s
+    for (const [key, entry] of audioPoolRef.current.entries()) {
+      if (desiredKeys.has(key)) continue;
+
+      const age = now - (entry.lastWantedAt || 0);
+      if (age > 700) {
+        try {
+          entry.el.pause();
+        } catch {}
+      }
+      if (age > 6000) {
+        unloadAndRemoveAudioKey(key);
+      }
+    }
+
+    // desired audios: ensure src, gently align
+    const videoEl = videoRef.current;
+    const playing = !!(wantedPlayRef.current || autoplay) && videoEl && !videoEl.paused && !videoEl.ended;
+
+    for (const d of desired) {
+      const { clip, src, targetTime } = d;
+      const entry = ensureAudioElementForKey(clip.key);
+      const a = entry.el;
+
+      if (entry.swapping) continue;
+
+      const srcNorm = normalizeUrl(src);
+      const curNorm = normalizeUrl(a.currentSrc || a.src || "");
+      const needsSwap = entry.srcNorm !== srcNorm || (curNorm && curNorm !== srcNorm);
+
+      if (needsSwap) {
+        entry.swapping = true;
+        try {
+          try {
+            a.pause();
+          } catch {}
+
+          entry.src = src;
+          entry.srcNorm = srcNorm;
+
+          a.src = src;
+          try {
+            a.load();
+          } catch {}
+
+          if (a.readyState < 1) {
+            try {
+              await waitForEvent(a, "loadedmetadata", 8000);
+            } catch {}
+          }
+        } finally {
+          entry.swapping = false;
+        }
+      }
+
+      applyMuteVolAll();
+
+      const cur = Number(a.currentTime || 0);
+      const drift = Math.abs(cur - targetTime);
+
+      // ✅ if scrubbing or not playing: allow tighter seek
+      const scrubbing = isScrubbingRef.current || isDraggingPlayheadRef.current;
+
+      // ✅ playing: only resync if drift is big (avoids crackles)
+      const HARD_DRIFT_PLAYING = 0.45;
+      const HARD_DRIFT_IDLE = 0.08;
+
+      const RESYNC_COOLDOWN = 450;
+
+      const shouldResync = scrubbing
+        ? drift > HARD_DRIFT_IDLE
+        : playing
+        ? drift > HARD_DRIFT_PLAYING
+        : drift > HARD_DRIFT_IDLE;
+
+      if (shouldResync && now - (entry.lastSyncAt || 0) > RESYNC_COOLDOWN) {
+        entry.lastSyncAt = now;
+        try {
+          if (typeof a.fastSeek === "function") a.fastSeek(targetTime);
+          else a.currentTime = targetTime;
+        } catch {}
+      }
+
+      // ✅ play/pause behavior
+      if (autoplay || wantedPlayRef.current) {
+        // only attempt play if we actually want playback
+        if (a.paused) {
+          const p = a.play?.();
+          if (p?.catch) p.catch(() => {});
+        }
+        entry.everPlayed = true;
+      } else {
+        // if user is idle, pause (but keep element; hysteresis handles removal)
+        try {
+          a.pause();
+        } catch {}
+      }
+    }
+  }
+
   async function ensureLoadedForTimelineTime(t, { autoplay } = { autoplay: false }) {
     const v = videoRef.current;
     if (!v) return;
@@ -1495,12 +1930,12 @@ function getDesiredAudioAtTime(t) {
     const timelineT = Math.max(0, Number(t) || 0);
     const clip = findVideoClipAtTime(timelineT);
 
-    // If in a gap: jump if user wants play, otherwise pause-ish (idle)
-    if (!clip || !clip.video) {
+    const media = clip ? resolveMediaForClip(clip) : null;
+
+    if (!clip || !media) {
       if (wantedPlayRef.current || autoplay) {
         const ns = findNextVideoStart(timelineT);
         if (ns == null) {
-          // end of timeline
           wantedPlayRef.current = false;
           try {
             v.pause();
@@ -1510,7 +1945,6 @@ function getDesiredAudioAtTime(t) {
           loadedSrcRef.current = "";
           return;
         }
-        // jump to next clip start and keep playing
         setPlayhead(ns);
         playheadRef.current = ns;
         return ensureLoadedForTimelineTime(ns, { autoplay: true });
@@ -1525,7 +1959,7 @@ function getDesiredAudioAtTime(t) {
       return;
     }
 
-    const src = streamUrl(clip.video) || "";
+    const src = streamUrl(media) || "";
     if (!src) return;
 
     const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
@@ -1536,7 +1970,6 @@ function getDesiredAudioAtTime(t) {
     if (needsSrcChange) {
       isSwappingSrcRef.current = true;
       try {
-        // Pause before swapping src to avoid weird buffered state
         try {
           v.pause();
         } catch {}
@@ -1560,7 +1993,7 @@ function getDesiredAudioAtTime(t) {
 
         if (loadTokenRef.current !== token) return;
 
-        applyMuteVol();
+        applyMuteVolAll();
 
         try {
           v.currentTime = targetVideoTime;
@@ -1577,9 +2010,10 @@ function getDesiredAudioAtTime(t) {
         isSwappingSrcRef.current = false;
       }
     } else {
-      applyMuteVol();
+      applyMuteVolAll();
       const cur = Number(v.currentTime || 0);
-      if (Math.abs(cur - targetVideoTime) > 0.03) {
+      // keep this tolerance modest; too tight causes jitter
+      if (Math.abs(cur - targetVideoTime) > 0.05) {
         try {
           v.currentTime = targetVideoTime;
         } catch {}
@@ -1594,84 +2028,102 @@ function getDesiredAudioAtTime(t) {
     }
   }
 
-  async function ensureAudioLoadedForTimelineTime(t, { autoplay } = { autoplay: false }) {
-    const a = audioRef.current;
-    if (!a) return;
+  // ✅ unified "tick" used by RAF and requestVideoFrameCallback
+  function tickPlayback() {
+    if (isScrubbingRef.current) return;
 
-    const token = loadTokenRef.current; // reuse your existing token; keep audio/video aligned
+    const v = videoRef.current;
+    if (!v) return;
 
-    const timelineT = Math.max(0, Number(t) || 0);
-    const clip = findAudioClipAtTime(timelineT);
+    // Only run the "live" clock when user wants playback
+    if (!wantedPlayRef.current) return;
 
-    // If no audio clip at this time: pause audio & clear loaded state
-    if (!clip || !clip.video) {
-      unloadAudioElement(a); // ✅ hard-stop & unload so it can't “leak”
+    const t = playheadRef.current ?? playhead;
+    const clip = findVideoClipAtTime(t);
+
+    if (!clip) {
+      ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("tick-gap"));
       return;
     }
 
-    const src = streamUrl(clip.video) || "";
-    if (!src) return;
+    const clipIn = Number(clip.in) || 0;
+    const clipOut = Number(clip.out) || 0;
 
-    const local = clamp(timelineT - (Number(clip.start) || 0), 0, clipLen(clip));
-    const targetAudioTime = (Number(clip.in) || 0) + local;
+    const local = clamp((v.currentTime || 0) - clipIn, 0, clipLen(clip));
+    const newPlayhead = (Number(clip.start) || 0) + local;
 
-    const needsSrcChange =
-      loadedAudioClipKeyRef.current !== clip.key ||
-      loadedAudioSrcRef.current !== src;
+    // update refs always
+    playheadRef.current = newPlayhead;
 
-    if (needsSrcChange) {
-      isSwappingAudioSrcRef.current = true;
-      try {
-        try { a.pause(); } catch {}
-
-        loadedAudioClipKeyRef.current = clip.key;
-        loadedAudioSrcRef.current = src;
-
-        if ((a.getAttribute("src") || "") !== src) {
-          a.setAttribute("src", src);
-        }
-
-        try { a.load(); } catch {}
-
-        try {
-          if (a.readyState < 1) {
-            await waitForEvent(a, "loadedmetadata", 8000);
-          }
-        } catch {}
-
-        // if something else took over, bail
-        if (loadTokenRef.current !== token) return;
-
-        applyMuteVol();
-
-        try { a.currentTime = targetAudioTime; } catch {}
-
-        if (a.readyState < 2) {
-          try { await waitForEvent(a, "canplay", 5000); } catch {}
-        }
-
-        if (loadTokenRef.current !== token) return;
-      } finally {
-        isSwappingAudioSrcRef.current = false;
-      }
-    } else {
-      applyMuteVol();
-      const cur = Number(a.currentTime || 0);
-      if (Math.abs(cur - targetAudioTime) > 0.05) {
-        try { a.currentTime = targetAudioTime; } catch {}
-      }
+    // ✅ UI updates throttled (but playhead ALWAYS moves, because we update state regularly)
+    const now = performance.now();
+    if (now - lastUiPlayheadSetRef.current > 33) {
+      lastUiPlayheadSetRef.current = now;
+      setPlayhead(newPlayhead);
     }
 
-    if (autoplay || wantedPlayRef.current) {
-      const p = a.play?.();
-      if (p && typeof p.catch === "function") p.catch(() => {});
+    // ✅ Throttle audio sync (and much gentler inside sync)
+    if (now - lastAudioSyncCallRef.current > 90) {
+      lastAudioSyncCallRef.current = now;
+      syncAllAudioToTimelineTime(newPlayhead, { autoplay: true });
+    }
+
+    // End-of-clip advance
+    const ct = Number(v.currentTime || 0);
+    if (ct >= clipOut - 0.12 && !isAdvancingRef.current) {
+      advanceToNextClip(clip);
     }
   }
 
-  // ---- Pause catcher: only pause at true end-of-timeline or user pause ----
+  function startRafClock() {
+    if (rafTickRef.current) return;
+
+    const loop = () => {
+      rafTickRef.current = requestAnimationFrame(loop);
+      tickPlayback();
+    };
+
+    rafTickRef.current = requestAnimationFrame(loop);
+  }
+
+  function stopRafClock() {
+    if (!rafTickRef.current) return;
+    cancelAnimationFrame(rafTickRef.current);
+    rafTickRef.current = 0;
+  }
+
+  // ✅ requestVideoFrameCallback clock (better “playhead moves” reliability)
+  function startRvfcClock() {
+    const v = videoRef.current;
+    if (!v || typeof v.requestVideoFrameCallback !== "function") return;
+
+    if (rvfcHandleRef.current) return;
+
+    const cb = () => {
+      // keep going only if playing intent is still true
+      if (!wantedPlayRef.current) {
+        rvfcHandleRef.current = 0;
+        return;
+      }
+      tickPlayback();
+      rvfcHandleRef.current = v.requestVideoFrameCallback(cb);
+    };
+
+    rvfcHandleRef.current = v.requestVideoFrameCallback(cb);
+  }
+
+  function stopRvfcClock() {
+    // requestVideoFrameCallback has no standard cancel; clearing handle is enough since we gate by wantedPlayRef
+    rvfcHandleRef.current = 0;
+  }
+
+  function stopAllClocks() {
+    stopRafClock();
+    stopRvfcClock();
+  }
+
   function forceResume(reason = "") {
     const v = videoRef.current;
-    const a = audioRef.current;
     if (!v) return;
     if (!wantedPlayRef.current) return;
 
@@ -1688,28 +2140,15 @@ function getDesiredAudioAtTime(t) {
       if (!wantedPlayRef.current) return;
       if (resumeTokenRef.current !== token) return;
 
-      // video
       if (v.paused || v.ended) {
         const p = v.play?.();
         if (p?.catch) p.catch(() => {});
       }
 
-      // ✅ audio: only resume if an audio clip exists under the current playhead
-      if (a) {
-        const tNow = playheadRef.current ?? playhead;
-        const desired = getDesiredAudioAtTime(tNow);
-
-        if (!desired) {
-          // ensure it stays silent
-          unloadAudioElement(a);
-        } else if (a.paused || a.ended) {
-          const p2 = a.play?.();
-          if (p2?.catch) p2.catch(() => {});
-        }
-      }
+      syncAllAudioToTimelineTime(playheadRef.current ?? playhead, { autoplay: true });
 
       if (triesLeft <= 0) return;
-      window.setTimeout(() => attempt(triesLeft - 1), 120);
+      window.setTimeout(() => attempt(triesLeft - 1), 140);
     };
 
     attempt(10);
@@ -1731,16 +2170,11 @@ function getDesiredAudioAtTime(t) {
       const now = performance.now();
       const curT = Number(vv.currentTime || 0);
 
-      // If time advanced, we're good.
       if (curT > start.t + 0.02) return;
-
-      // If we've recently had a timeupdate, also fine.
       if (now - start.at < 300) return;
 
-      // Otherwise: we're "playing" but stuck -> kick it
       forceResume(`progressKick:${label}`);
 
-      // Hard-kick fallback: reload+seek+play if still stuck after a short delay
       window.setTimeout(() => {
         const v2 = videoRef.current;
         if (!v2) return;
@@ -1753,16 +2187,22 @@ function getDesiredAudioAtTime(t) {
     }, 550);
   }
 
-  // Transport: Play/Pause
   async function togglePlay() {
     const v = videoRef.current;
-    const a = audioRef.current;
     if (!v) return;
 
     if (wantedPlayRef.current) {
       wantedPlayRef.current = false;
-      try { v.pause(); } catch {}
-      try { a?.pause?.(); } catch {}
+      stopAllClocks();
+
+      try {
+        v.pause();
+      } catch {}
+      for (const { el } of audioPoolRef.current.values()) {
+        try {
+          el.pause();
+        } catch {}
+      }
       setIsPlaying(false);
       return;
     }
@@ -1779,41 +2219,48 @@ function getDesiredAudioAtTime(t) {
       playheadRef.current = target;
 
       await ensureLoadedForTimelineTime(target, { autoplay: true });
-      await ensureAudioLoadedForTimelineTime(target, { autoplay: true });
+      await syncAllAudioToTimelineTime(target, { autoplay: true });
 
       forceResume("togglePlay-gap");
+      // start clocks after play intent
+      startRvfcClock();
+      startRafClock();
       return;
     }
 
-    // ✅ normal case: in a video clip already
     await ensureLoadedForTimelineTime(t, { autoplay: true });
-    await ensureAudioLoadedForTimelineTime(t, { autoplay: true });
+    await syncAllAudioToTimelineTime(t, { autoplay: true });
 
     forceResume("togglePlay");
+
+    // ✅ start clocks after play begins
+    startRvfcClock();
+    startRafClock();
   }
 
   function onSequenceScrub(value) {
     const t = Number(value) || 0;
     isScrubbingRef.current = true;
 
-    // Keep the element aligned while dragging the slider, but don’t autoplay mid-drag.
-    ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
-      setPlayhead(t);
-      playheadRef.current = t;
-    });
-    ensureAudioLoadedForTimelineTime(t, { autoplay: false });
+    // ✅ keep playhead state in sync immediately (so handle moves)
+    setPlayhead(t);
+    playheadRef.current = t;
+
+    ensureLoadedForTimelineTime(t, { autoplay: false });
+    syncAllAudioToTimelineTime(t, { autoplay: false });
   }
 
   function onSequenceScrubCommit(value) {
     const t = Number(value) || 0;
     isScrubbingRef.current = false;
+
     setPlayhead(t);
     playheadRef.current = t;
 
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
       if (wantedPlayRef.current) forceResume("scrubCommit");
     });
-    ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+    syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
   }
 
   function enterFullscreen() {
@@ -1832,7 +2279,7 @@ function getDesiredAudioAtTime(t) {
     playheadRef.current = t;
     isScrubbingRef.current = false;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
-      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("goToStart");
     });
   }
@@ -1844,7 +2291,7 @@ function getDesiredAudioAtTime(t) {
     playheadRef.current = t;
     isScrubbingRef.current = false;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
-      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("goToEnd");
     });
   }
@@ -1860,7 +2307,7 @@ function getDesiredAudioAtTime(t) {
     isScrubbingRef.current = false;
 
     ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
-      ensureAudioLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current })
+      syncAllAudioToTimelineTime(target, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("prevClip");
     });
   }
@@ -1876,12 +2323,11 @@ function getDesiredAudioAtTime(t) {
     isScrubbingRef.current = false;
 
     ensureLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current }).finally(() => {
-      ensureAudioLoadedForTimelineTime(target, { autoplay: wantedPlayRef.current })
+      syncAllAudioToTimelineTime(target, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("nextClip");
     });
   }
 
-  // Advance only when real clip out is reached
   async function advanceToNextClip(endingClip = null) {
     if (isAdvancingRef.current) return;
     isAdvancingRef.current = true;
@@ -1895,6 +2341,7 @@ function getDesiredAudioAtTime(t) {
       wantedPlayRef.current = false;
       setIsPlaying(false);
       isAdvancingRef.current = false;
+      stopAllClocks();
       return;
     }
 
@@ -1903,7 +2350,7 @@ function getDesiredAudioAtTime(t) {
 
     await ensureLoadedForTimelineTime(nextStart, { autoplay: true });
     forceResume("advanceToNextClip");
-    await syncAudioToTimelineTime(nextStart, { autoplay: true });
+    await syncAllAudioToTimelineTime(nextStart, { autoplay: true });
 
     window.setTimeout(() => {
       forceResume("advanceToNextClip-delayed");
@@ -1918,7 +2365,18 @@ function getDesiredAudioAtTime(t) {
     if (!v) return;
 
     const sync = () => {
-      setIsPlaying(!v.paused && !v.ended);
+      const playing = !v.paused && !v.ended;
+      setIsPlaying(playing);
+
+      // ✅ start/stop clocks when actual media state changes
+      if (playing && wantedPlayRef.current) {
+        startRvfcClock();
+        startRafClock();
+      }
+      if (!playing) {
+        // don’t kill clocks if user still intends play; forceResume will restart
+        if (!wantedPlayRef.current) stopAllClocks();
+      }
     };
 
     sync();
@@ -1931,9 +2389,9 @@ function getDesiredAudioAtTime(t) {
       v.removeEventListener("pause", sync);
       v.removeEventListener("ended", sync);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Track real playback progress so we can detect stalls
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -1946,7 +2404,6 @@ function getDesiredAudioAtTime(t) {
     return () => v.removeEventListener("timeupdate", onTimeUpdate);
   }, []);
 
-  // ✅ Pause catcher & resume-on-ready glue
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -1955,18 +2412,14 @@ function getDesiredAudioAtTime(t) {
       if (!wantedPlayRef.current) return;
       if (isSwappingSrcRef.current) return;
 
-      const vv = videoRef.current;
-      if (!vv) return;
-
-      // ✅ If we're truly at the end of the whole timeline, stop intent.
       const t = playheadRef.current ?? playhead;
       if (atTimelineEnd(t)) {
         wantedPlayRef.current = false;
         setIsPlaying(false);
+        stopAllClocks();
         return;
       }
 
-      // Otherwise: unexpected pause (buffering / browser quirk) -> resume
       forceResume("pause");
     };
 
@@ -1994,93 +2447,37 @@ function getDesiredAudioAtTime(t) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timelineEnd, clipsSorted.length]);
 
-  // Master clock: timeupdate drives playhead; and advances at out point
+  // When clips change, re-align audio/video as needed
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
+    const t = playheadRef.current ?? playhead;
+    if (wantedPlayRef.current) return; // ✅ don’t fight the live clock
 
-    const EPS_OUT = 0.15;
+    syncAllAudioToTimelineTime(t, { autoplay: false });
 
-    const onTick = () => {
-      if (isScrubbingRef.current) return;
+    const clip = findVideoClipAtTime(t);
+    if (!clip) return;
 
-      const t = playheadRef.current ?? playhead;
-      const clip = findVideoClipAtTime(t);
-
-      // If we are playing and we hit a gap, jump forward immediately.
-      if (!clip) {
-        if (wantedPlayRef.current) {
-          ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("tick-gap"));
-        }
-        return;
-      }
-
-      const clipIn = Number(clip.in) || 0;
-      const clipOut = Number(clip.out) || 0;
-
-      const local = clamp((v.currentTime || 0) - clipIn, 0, clipLen(clip));
-      const newPlayhead = (Number(clip.start) || 0) + local;
-
-      setPlayhead(newPlayhead);
-      playheadRef.current = newPlayhead;
-
-      if (wantedPlayRef.current && !isSwappingAudioSrcRef.current) {
-        // ✅ lightweight sync (no flashing)
-        syncAudioToTimelineTime(newPlayhead, { autoplay: true });
-      }
-
-      // ✅ Only advance when the underlying video time reaches OUT
-      const ct = Number(v.currentTime || 0);
-      if (ct >= clipOut - EPS_OUT) {
-        if (!isAdvancingRef.current) {
-          advanceToNextClip(clip);
-        }
-      }
-    };
-
-    v.addEventListener("timeupdate", onTick);
-    return () => v.removeEventListener("timeupdate", onTick);
+    if (loadedClipKeyRef.current !== clip.key) {
+      ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
+        syncAllAudioToTimelineTime(t, { autoplay: false });
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipsSorted.length, playhead]);
+  }, [clipsSorted.length]);
 
- // When clips change, re-align viewer to current playhead clip if needed
-    useEffect(() => {
-      const t = playheadRef.current ?? playhead;
-
-      // ✅ NEW: audio might need re-pick even if video clip doesn't change
-      const ac = findAudioClipAtTime(t);
-      if (ac && loadedAudioClipKeyRef.current !== ac.key) {
-        ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
-      }
-      if (!ac && loadedAudioClipKeyRef.current != null) {
-        // no audio at this time anymore
-        ensureAudioLoadedForTimelineTime(t, { autoplay: false });
-      }
-
-      const clip = findVideoClipAtTime(t);
-      if (!clip) return;
-
-      if (loadedClipKeyRef.current !== clip.key) {
-        ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
-          ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
-          if (wantedPlayRef.current) forceResume("clipsChanged");
-        });
-      }
-    }, [clipsSorted.length]);
-
-  // ✅ When React swaps viewerSrc (playhead crosses into a new clip), ensure the element is aligned.
+  // When viewerSrc changes, ensure element aligned
   useEffect(() => {
     if (!viewerSrc) return;
     const t = playheadRef.current ?? playhead;
     ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
-      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current })
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
       if (wantedPlayRef.current) forceResume("viewerSrcChanged");
       ensureProgressKick("viewerSrcChanged");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerSrc]);
 
-  // -------- Playhead drag (global pointer listeners) --------
+  // -------- Playhead drag --------
   const dragPointerIdRef = useRef(null);
 
   function onTimelineBackgroundPointerDown(e) {
@@ -2089,7 +2486,6 @@ function getDesiredAudioAtTime(t) {
     if (isDraggingPlayheadRef.current) return;
     if (tool === "trackFwd") return;
 
-    // If you clicked *on* something interactive, do nothing.
     if (e.target?.closest?.(".genEditClip")) return;
     if (e.target?.closest?.(".genEditTrimHandle")) return;
     if (e.target?.closest?.(".genEditClipX")) return;
@@ -2097,11 +2493,13 @@ function getDesiredAudioAtTime(t) {
     if (e.target?.closest?.(".genEditTimeHeader")) return;
     if (e.target?.closest?.(".genEditTimeHeaderHit")) return;
 
-    // Otherwise, you clicked "empty timeline" -> clear selection.
     if (e.shiftKey) return;
     clearSelection();
   }
 
+  // ✅ playhead “handle doesn’t move” fix:
+  // - Update state immediately on pointer move (already done)
+  // - Add touchAction none + pointer capture + transform-based positioning in render (below)
   function onPlayheadPointerDown(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -2114,6 +2512,7 @@ function getDesiredAudioAtTime(t) {
     setPlayhead(t);
     playheadRef.current = t;
     ensureLoadedForTimelineTime(t, { autoplay: false });
+    syncAllAudioToTimelineTime(t, { autoplay: false });
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -2127,7 +2526,7 @@ function getDesiredAudioAtTime(t) {
       setPlayhead(tt);
       playheadRef.current = tt;
       ensureLoadedForTimelineTime(tt, { autoplay: false });
-      ensureAudioLoadedForTimelineTime(tt, { autoplay: false });
+      syncAllAudioToTimelineTime(tt, { autoplay: false });
     };
 
     const onUp = (ev) => {
@@ -2151,7 +2550,6 @@ function getDesiredAudioAtTime(t) {
     window.addEventListener("pointercancel", onUp);
   }
 
-  // ✅ Only the time header row updates playhead on click
   function onTimeHeaderPointerDown(e) {
     if (isDraggingClipRef.current) return;
     if (isTrimmingRef.current) return;
@@ -2164,11 +2562,11 @@ function getDesiredAudioAtTime(t) {
     playheadRef.current = t;
 
     ensureLoadedForTimelineTime(t, { autoplay: false }).finally(() => {
-      ensureAudioLoadedForTimelineTime(t, { autoplay: false });
+      syncAllAudioToTimelineTime(t, { autoplay: false });
       isScrubbingRef.current = false;
       if (wantedPlayRef.current) {
         ensureLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
-        ensureAudioLoadedForTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
+        syncAllAudioToTimelineTime(t, { autoplay: true }).finally(() => forceResume("timeHeaderClick"));
       }
     });
   }
@@ -2180,10 +2578,8 @@ function getDesiredAudioAtTime(t) {
     const isAudio = isAudioMedia(video);
     const kind = forceKind ?? (isAudio ? "audio" : "video");
 
-    // Video must live on V1
-    let track = kind === "video" ? 0 : (Number(forceTrack) || 0);
+    let track = kind === "video" ? 0 : Number(forceTrack) || 0;
 
-    // If we’re placing audio on a higher lane than exists, expand lanes first
     if (kind === "audio") {
       setAudioLaneCount((n) => clamp(Math.max(Number(n) || 1, track + 1), 1, 5));
       track = clamp(track, 0, 4);
@@ -2199,7 +2595,7 @@ function getDesiredAudioAtTime(t) {
       sourceDuration: dur,
     });
 
-    setClips((t) => [...t, item]);
+    setClipsSynced((t) => [...t, item]);
     setActiveClipKey(item.key);
 
     requestAnimationFrame(() => {
@@ -2215,12 +2611,11 @@ function getDesiredAudioAtTime(t) {
 
     const removingLoaded = keys.includes(loadedClipKeyRef.current);
 
-    setClips((prev) => prev.filter((c) => c && !keys.includes(c.key)));
+    setClipsSynced((prev) => prev.filter((c) => c && !keys.includes(c.key)));
 
     setSelectedClipKeys(new Set());
     setActiveClipKey(null);
 
-    // If we deleted the loaded clip, force the viewer to re-align on the next tick
     requestAnimationFrame(() => {
       const t = playheadRef.current ?? playhead;
 
@@ -2229,99 +2624,15 @@ function getDesiredAudioAtTime(t) {
         loadedSrcRef.current = "";
       }
 
+      // also drop any removed audio keys
+      for (const k of keys) unloadAndRemoveAudioKey(k);
+
       ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
+        syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
         if (wantedPlayRef.current) forceResume("plainDelete");
       });
     });
   }
-
-  function rippleDelete(keysToRemove) {
-    pushUndo("delete");
-    const keys = Array.from(keysToRemove || []);
-    if (!keys.length) return;
-
-    // If we are deleting the currently-loaded clip, force a reload afterwards
-    const removingLoaded = keys.includes(loadedClipKeyRef.current);
-
-    // Build plan from current clips BEFORE update (needed for playhead correction)
-    const planForPlayhead = buildRipplePlan(clips, keys);
-
-    setClips((prev) => {
-      const { removeSet, planByLane } = buildRipplePlan(prev, keys);
-
-      // First delete
-      const kept = prev.filter((c) => c && !removeSet.has(c.key));
-
-      // Then shift clips per lane
-      const next = kept.map((c) => {
-        const lk = laneKeyOf(c);
-        const plan = planByLane.get(lk);
-        if (!plan || !plan.total) return c;
-
-        const s = Number(c.start) || 0;
-        const shift = rippleShiftForTime(plan.intervals, s);
-        if (shift <= 0) return c;
-
-        return { ...c, start: Math.max(0, s - shift) };
-      });
-
-      return next;
-    });
-
-    // Selection cleanup
-    setSelectedClipKeys(new Set());
-    setActiveClipKey(null);
-
-    // Adjust playhead after the state update lands
-    requestAnimationFrame(() => {
-      const t0 = playheadRef.current ?? playhead;
-
-      // Ripple playhead based on VIDEO lane
-      const videoLaneKey = "video:0";
-      const plan = planForPlayhead.planByLane.get(videoLaneKey);
-
-      let t1 = t0;
-
-      if (plan && plan.total) {
-        const inside = isTimeInsideAny(plan.intervals, t0);
-
-        if (inside) {
-          const priorShift = rippleShiftForTime(plan.intervals, inside.start);
-          t1 = Math.max(0, inside.start - priorShift);
-        } else {
-          const shift = rippleShiftForTime(plan.intervals, t0);
-          t1 = Math.max(0, t0 - shift);
-        }
-      }
-
-      setPlayhead(t1);
-      playheadRef.current = t1;
-
-      // If we deleted the loaded clip, force the viewer to re-align
-      if (removingLoaded) {
-        loadedClipKeyRef.current = null;
-        loadedSrcRef.current = "";
-      }
-
-      ensureLoadedForTimelineTime(t1, { autoplay: wantedPlayRef.current }).finally(() => {
-        if (wantedPlayRef.current) forceResume("rippleDelete");
-      });
-    });
-  }
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    const log = (e) => console.log("[AUDIO]", e.type, {
-      src: a.currentSrc,
-      readyState: a.readyState,
-      paused: a.paused,
-      ct: a.currentTime,
-      err: a.error?.message || a.error?.code
-    });
-    ["play","pause","waiting","stalled","canplay","error","loadedmetadata"].forEach(evt => a.addEventListener(evt, log));
-    return () => ["play","pause","waiting","stalled","canplay","error","loadedmetadata"].forEach(evt => a.removeEventListener(evt, log));
-  }, []);
 
   // Ctrl/Cmd + S = Save
   useEffect(() => {
@@ -2338,15 +2649,18 @@ function getDesiredAudioAtTime(t) {
         if (isSaving) return;
         if (!dirty) return;
 
+        console.log("SAVE uses clipsRef:", clipsRef.current?.map(c => ({k:c.key, start:c.start, kind:c.kind, track:c.track})));
+
         saveProjectNow();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dirty, isSaving, saveProjectNow]);
+  }, [dirty, isSaving]);
 
-    useEffect(() => {
+  // Undo/Redo hotkeys
+  useEffect(() => {
     const onKeyDown = (e) => {
       const key = (e.key || "").toLowerCase();
       const tag = (e.target?.tagName || "").toLowerCase();
@@ -2355,14 +2669,12 @@ function getDesiredAudioAtTime(t) {
 
       const mod = e.ctrlKey || e.metaKey;
 
-      // Undo: Ctrl/Cmd+Z
       if (mod && key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
         return;
       }
 
-      // Redo: Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y
       if ((mod && key === "z" && e.shiftKey) || (mod && key === "y")) {
         e.preventDefault();
         redo();
@@ -2396,15 +2708,7 @@ function getDesiredAudioAtTime(t) {
         if (!toRemove.length) return;
 
         e.preventDefault();
-
-        // ✅ SHIFT = ripple delete
-        if (e.shiftKey) {
-          rippleDelete(toRemove);
-        } else {
-          setClips((prev) => prev.filter((c) => !toRemove.includes(c.key)));
-          setSelectedClipKeys(new Set());
-          setActiveClipKey(null);
-        }
+        removeFromTimeline(toRemove);
       }
     };
 
@@ -2412,10 +2716,10 @@ function getDesiredAudioAtTime(t) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeClipKey]);
 
-  // -------- Clip drag (shift snap) / Razor split --------
+  // -------- Clip drag / Razor split --------
   function splitClipAtTime(clipKey, timelineT) {
     pushUndo("razor split");
-    setClips((prev) => {
+    setClipsSynced((prev) => {
       const clip = prev.find((c) => c.key === clipKey);
       if (!clip) return prev;
 
@@ -2465,13 +2769,11 @@ function getDesiredAudioAtTime(t) {
     if (t?.closest?.(".genEditClipX")) return;
     if (t?.closest?.(".genEditTrimHandle")) return;
 
-    // ✅ SLIP MODE: drag inside clip to offset source (in/out) while keeping timeline length
     if (tool === "slip") {
       onSlipPointerDown(e, clipKey);
       return;
     }
 
-    // ✅ RAZOR MODE: click clip to split at mouse time
     if (tool === "razor") {
       const raw = getTimeFromClientX(e.clientX);
       const tt = e.shiftKey ? snapRazorTime(raw) : raw;
@@ -2480,7 +2782,6 @@ function getDesiredAudioAtTime(t) {
       return;
     }
 
-    // ✅ RIPPLE TOOL: do NOT start dragging clips around
     if (tool === "ripple") {
       if (e.shiftKey) toggleSelectionKey(clipKey);
       else {
@@ -2490,8 +2791,7 @@ function getDesiredAudioAtTime(t) {
       }
       return;
     }
-  
-    // ✅ TRACK SELECT FORWARD: click selects everything forward AND allows dragging the group
+
     if (tool === "trackFwd") {
       const clip = clips.find((c) => c.key === clipKey);
       if (!clip) return;
@@ -2511,17 +2811,13 @@ function getDesiredAudioAtTime(t) {
         .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
         .map((c) => c.key);
 
-      // ✅ Set selection immediately so drag uses it right away
       setSelectionImmediate(keys, { additive: false });
-
-      // NOTE: do NOT return — continue into normal drag behavior below
+      // continue into drag
     }
 
-    // ✅ SELECT MODE (existing drag behavior)
     const clip = clips.find((c) => c.key === clipKey);
     if (!clip) return;
 
-    // before changing anything
     pushUndo("move clip");
 
     isDraggingClipRef.current = true;
@@ -2538,12 +2834,10 @@ function getDesiredAudioAtTime(t) {
     const group = clips
       .filter((c) => groupKeys.includes(c.key))
       .filter((c) => {
-          // In Track Select Forward + Shift, allow cross-lane drag
-          if (tool === "trackFwd" && e.shiftKey) return true;
-          return c.kind === primary.kind;
-        })
+        if (tool === "trackFwd" && e.shiftKey) return true;
+        return c.kind === primary.kind;
+      })
       .map((c) => ({ key: c.key, start: Number(c.start) || 0, kind: c.kind, track: Number(c.track) || 0 }));
-
 
     dragGroupRef.current = group;
     dragGroupPrimaryKeyRef.current = clipKey;
@@ -2578,12 +2872,25 @@ function getDesiredAudioAtTime(t) {
     const group = dragGroupRef.current || [];
     const primaryKey = dragGroupPrimaryKeyRef.current || key;
 
-    const primaryOrig = group.find((g) => g.key === primaryKey) || { start: dragClipStartRef.current, kind: null, track: null };
+    const primaryOrig =
+      group.find((g) => g.key === primaryKey) || { start: dragClipStartRef.current, kind: null, track: null };
     const dxSeconds = dxPx / PPS;
 
     let nextPrimaryStart = Math.max(0, Number(primaryOrig.start || 0) + dxSeconds);
 
     if (e.shiftKey) nextPrimaryStart = Math.max(0, snapSeconds(nextPrimaryStart, 1));
+
+    // decide what lane we’re snapping within (based on where you’re dragging)
+    const lane = getLaneFromClientY(e.clientY);
+
+    // IMPORTANT: only snap within same kind lane (video stays video, audio stays audio)
+    const targetLane =
+      lane && lane.kind === (dragOrigTrackRef.current?.kind ?? primaryOrig.kind)
+        ? lane
+        : { kind: dragOrigTrackRef.current?.kind ?? primaryOrig.kind, track: dragOrigTrackRef.current?.track ?? primaryOrig.track };
+
+    // magnetic snap (same kind+track)
+    nextPrimaryStart = snapToMagneticLane(nextPrimaryStart, primaryKey, targetLane, { includePlayhead: true });
 
     nextPrimaryStart = snapToEdges(nextPrimaryStart, primaryKey);
 
@@ -2593,16 +2900,16 @@ function getDesiredAudioAtTime(t) {
     let nextKind = orig?.kind;
     let nextTrack = orig?.track;
 
-    const lane = getLaneFromClientY(e.clientY);
-    if (lane && orig?.kind === lane.kind) {
-      nextKind = lane.kind;
-      nextTrack = lane.track;
-      if (nextKind === "video") nextTrack = 0;
-    }
+    //const lane = getLaneFromClientY(e.clientY);
+    //if (lane && orig?.kind === lane.kind) {
+     // nextKind = lane.kind;
+     // nextTrack = lane.track;
+     // if (nextKind === "video") nextTrack = 0;
+    //}
 
     const groupKeySet = new Set(group.map((g) => g.key));
 
-    setClips((prev) =>
+    setClipsSynced((prev) =>
       prev.map((c) => {
         if (!groupKeySet.has(c.key)) return c;
 
@@ -2631,6 +2938,11 @@ function getDesiredAudioAtTime(t) {
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
+
+    requestAnimationFrame(() => {
+      const t = playheadRef.current ?? playhead;
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
+    });
   }
 
   // -------- Slip --------
@@ -2669,10 +2981,9 @@ function getDesiredAudioAtTime(t) {
       text: `Slip ${fmtTime(in0)} → ${fmtTime(out0)} (Δ +0:00)`,
     });
 
-    // ✅ After moving clips, re-evaluate audio at current playhead
     requestAnimationFrame(() => {
       const t = playheadRef.current ?? playhead;
-      ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
     });
   }
 
@@ -2689,7 +3000,7 @@ function getDesiredAudioAtTime(t) {
     const nextIn = clampSlipIn(orig.in + dxSeconds, orig.srcDur, orig.len);
     const nextOut = nextIn + orig.len;
 
-    setClips((prev) =>
+    setClipsSynced((prev) =>
       prev.map((c) => {
         if (c.key !== key) return c;
         return { ...c, in: nextIn, out: nextOut };
@@ -2718,157 +3029,148 @@ function getDesiredAudioAtTime(t) {
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
+
+    requestAnimationFrame(() => {
+      const t = playheadRef.current ?? playhead;
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
+    });
   }
 
-  // -------- Trim / Ripple trim / Roll (shared handles) --------
-function onTrimPointerDown(e, clipKey, side) {
-  pushUndo(`trim ${side}`);
-  e.preventDefault();
-  e.stopPropagation();
+  // -------- Trim / Ripple trim / Roll (verbatim from your paste) --------
+  function onTrimPointerDown(e, clipKey, side) {
+    pushUndo(`trim ${side}`);
+    e.preventDefault();
+    e.stopPropagation();
 
-  const clip = clips.find((c) => c.key === clipKey);
-  if (!clip) return;
+    const clip = clips.find((c) => c.key === clipKey);
+    if (!clip) return;
 
-  isTrimmingRef.current = true;
-  trimSideRef.current = side;
-  trimKeyRef.current = clipKey;
-  trimStartXRef.current = e.clientX;
+    isTrimmingRef.current = true;
+    trimSideRef.current = side;
+    trimKeyRef.current = clipKey;
+    trimStartXRef.current = e.clientX;
 
-  const laneKind = clip.kind;
-  const laneTrack = Number(clip.track) || 0;
+    const laneKind = clip.kind;
+    const laneTrack = Number(clip.track) || 0;
 
-  // Capture starts for ripple shifting (your existing approach)
-  const laneStarts = new Map();
-  for (const c of clips) {
-    if (!c) continue;
-    if (c.kind !== laneKind) continue;
-    if ((Number(c.track) || 0) !== laneTrack) continue;
-    laneStarts.set(c.key, Number(c.start) || 0);
-  }
+    const laneStarts = new Map();
+    for (const c of clips) {
+      if (!c) continue;
+      if (c.kind !== laneKind) continue;
+      if ((Number(c.track) || 0) !== laneTrack) continue;
+      laneStarts.set(c.key, Number(c.start) || 0);
+    }
 
-  const start0 = Number(clip.start) || 0;
-  const end0 = start0 + clipLen(clip);
+    const start0 = Number(clip.start) || 0;
+    const end0 = start0 + clipLen(clip);
 
-  // If roll tool, we need the neighbor clip at the cut point.
-  // - dragging RIGHT handle of left clip => neighbor is clip whose start == end0
-  // - dragging LEFT handle of right clip => neighbor is clip whose end == start0
-  let roll = null;
-  if (tool === "roll") {
-    if (side === "r") {
-      const rightNeighbor = findAdjacentOnLane(clips, {
-        kind: laneKind,
-        track: laneTrack,
-        atTime: end0,
-        direction: "right",
-        excludeKeys: [clipKey],
-      });
-      if (rightNeighbor) {
-        const left0 = clip;           // the one you grabbed
-        const right0 = rightNeighbor; // the neighbor
+    let roll = null;
+    if (tool === "roll") {
+      if (side === "r") {
+        const rightNeighbor = findAdjacentOnLane(clips, {
+          kind: laneKind,
+          track: laneTrack,
+          atTime: end0,
+          direction: "right",
+          excludeKeys: [clipKey],
+        });
+        if (rightNeighbor) {
+          const left0 = clip;
+          const right0 = rightNeighbor;
 
-        roll = {
-          leftKey: left0.key,
-          rightKey: right0.key,
+          roll = {
+            leftKey: left0.key,
+            rightKey: right0.key,
+            cut0: end0,
+            leftIn0: Number(left0.in) || 0,
+            leftOut0: Number(left0.out) || 0,
+            rightStart0: Number(right0.start) || 0,
+            rightIn0: Number(right0.in) || 0,
+            rightOut0: Number(right0.out) || 0,
+          };
+        }
+      } else {
+        const leftNeighbor = findAdjacentOnLane(clips, {
+          kind: laneKind,
+          track: laneTrack,
+          atTime: start0,
+          direction: "left",
+          excludeKeys: [clipKey],
+        });
+        if (leftNeighbor) {
+          const left0 = leftNeighbor;
+          const right0 = clip;
 
-          // ✅ frozen baselines (these must NOT come from prev on move)
-          cut0: end0,
-          leftIn0: Number(left0.in) || 0,
-          leftOut0: Number(left0.out) || 0,
-
-          rightStart0: Number(right0.start) || 0,
-          rightIn0: Number(right0.in) || 0,
-          rightOut0: Number(right0.out) || 0,
-        };
-      }
-    } else {
-      const leftNeighbor = findAdjacentOnLane(clips, {
-        kind: laneKind,
-        track: laneTrack,
-        atTime: start0,
-        direction: "left",
-        excludeKeys: [clipKey],
-      });
-      if (leftNeighbor) {
-        const left0 = leftNeighbor;
-        const right0 = clip;
-
-        roll = {
-          leftKey: left0.key,
-          rightKey: right0.key,
-
-          // ✅ frozen baselines
-          cut0: start0,
-          leftIn0: Number(left0.in) || 0,
-          leftOut0: Number(left0.out) || 0,
-
-          rightStart0: Number(right0.start) || 0,
-          rightIn0: Number(right0.in) || 0,
-          rightOut0: Number(right0.out) || 0,
-        };
+          roll = {
+            leftKey: left0.key,
+            rightKey: right0.key,
+            cut0: start0,
+            leftIn0: Number(left0.in) || 0,
+            leftOut0: Number(left0.out) || 0,
+            rightStart0: Number(right0.start) || 0,
+            rightIn0: Number(right0.in) || 0,
+            rightOut0: Number(right0.out) || 0,
+          };
+        }
       }
     }
+
+    trimOrigRef.current = {
+      start: start0,
+      in: Number(clip.in) || 0,
+      out: Number(clip.out) || 0,
+      sourceDuration: Number(clip.sourceDuration) || 0,
+      kind: laneKind,
+      track: laneTrack,
+      end: end0,
+      laneStarts,
+      roll,
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    setActiveClipKey(clipKey);
+
+    setTrimTip({
+      x: e.clientX + 12,
+      y: e.clientY + 12,
+      text: formatTrimTooltip({
+        side,
+        length: clipLen(clip),
+        deltaLength: 0,
+        isRipple: tool === "ripple",
+      }),
+    });
   }
 
-  trimOrigRef.current = {
-    start: start0,
-    in: Number(clip.in) || 0,
-    out: Number(clip.out) || 0,
-    sourceDuration: Number(clip.sourceDuration) || 0,
-    kind: laneKind,
-    track: laneTrack,
-    end: end0,
-    laneStarts,
-    roll, // { leftKey, rightKey } or null
-  };
+  function onTrimPointerMove(e) {
+    if (!isTrimmingRef.current) return;
 
-  try {
-    e.currentTarget.setPointerCapture(e.pointerId);
-  } catch {}
+    const key = trimKeyRef.current;
+    const side = trimSideRef.current;
+    const orig = trimOrigRef.current;
+    if (!key || !side || !orig) return;
 
-  setActiveClipKey(clipKey);
+    const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
+    const isRipple = tool === "ripple";
+    const isRoll = tool === "roll";
 
-  setTrimTip({
-    x: e.clientX + 12,
-    y: e.clientY + 12,
-    text: formatTrimTooltip({
-      side,
-      inTime: clip.in,
-      outTime: clip.out,
-      length: clipLen(clip),
-      deltaLength: 0,
-      isRipple: tool === "ripple",
-    }),
-  });
-}
+    setClipsSynced((prev) => {
+      const primary = prev.find((c) => c.key === key);
+      if (!primary) return prev;
 
-function onTrimPointerMove(e) {
-  if (!isTrimmingRef.current) return;
+      const laneKind = orig.kind;
+      const laneTrack = Number(orig.track) || 0;
 
-  const key = trimKeyRef.current;
-  const side = trimSideRef.current;
-  const orig = trimOrigRef.current;
-  if (!key || !side || !orig) return;
-
-  const dxSeconds = (e.clientX - trimStartXRef.current) / PPS;
-  const isRipple = tool === "ripple";
-  const isRoll = tool === "roll";
-
-  setClips((prev) => {
-    const primary = prev.find((c) => c.key === key);
-    if (!primary) return prev;
-
-    const laneKind = orig.kind;
-    const laneTrack = Number(orig.track) || 0;
-
-    // ---- ROLL EDIT ----
-    // Move cut between 2 adjacent clips, keeping combined outside edges fixed.
-    if (isRoll && orig.roll) {
-      const left = prev.find((c) => c.key === orig.roll.leftKey);
-      const right = prev.find((c) => c.key === orig.roll.rightKey);
-      if (!left || !right) return prev;
+      if (isRoll && orig.roll) {
+        const left = prev.find((c) => c.key === orig.roll.leftKey);
+        const right = prev.find((c) => c.key === orig.roll.rightKey);
+        if (!left || !right) return prev;
 
         const r0 = orig.roll;
-        const leftStart0 = Number(left.start) || 0; // left START is fixed in a roll edit
+        const leftStart0 = Number(left.start) || 0;
         const leftIn0 = Number(r0.leftIn0) || 0;
         const leftOut0 = Number(r0.leftOut0) || 0;
         const leftSrcDur = Number(left.sourceDuration || left?.video?.durationSeconds || 0);
@@ -2879,406 +3181,298 @@ function onTrimPointerMove(e) {
         const rightSrcDur = Number(right.sourceDuration || right?.video?.durationSeconds || 0);
 
         const cut0 = Number(r0.cut0) || 0;
-        const rightEnd0 = rightStart0 + Math.max(0, rightOut0 - rightIn0); // frozen outer edge
+        const rightEnd0 = rightStart0 + Math.max(0, rightOut0 - rightIn0);
 
         let delta = dxSeconds;
-      if (e.shiftKey) {
-        // snap cut movement to whole seconds in timeline space
-        const snappedCut = snapSeconds(cut0 + delta, 1);
+        if (e.shiftKey) {
+          const snappedCut = snapSeconds(cut0 + delta, 1);
+          delta = snappedCut - cut0;
+        }
+
+        const laneEdges = getLaneEdgesSeconds(prev, {
+          kind: laneKind,
+          track: laneTrack,
+          excludeKey: null,
+        }).filter((t) => {
+          const eps = 1e-6;
+          const leftS = leftStart0;
+          const leftE = cut0;
+          const rightS = rightStart0;
+          const rightE = rightEnd0;
+          return (
+            Math.abs(t - leftS) > eps &&
+            Math.abs(t - leftE) > eps &&
+            Math.abs(t - rightS) > eps &&
+            Math.abs(t - rightE) > eps
+          );
+        });
+
+        const proposedCut = cut0 + delta;
+        const snappedCut = snapToNearest(proposedCut, laneEdges, EDGE_SNAP_SEC);
         delta = snappedCut - cut0;
-      }
 
-      // Snap the MOVING CUT to lane edges (excluding these two clips)
-      const laneEdges = getLaneEdgesSeconds(prev, {
-        kind: laneKind,
-        track: laneTrack,
-        excludeKey: null,
-      }).filter((t) => {
-        // Remove the two clip edges so we don't "snap to ourselves"
-        const eps = 1e-6;
-        const leftS = leftStart0;
-        const leftE = cut0;
-        const rightS = rightStart0;
-        const rightE = rightEnd0;
-        return (
-          Math.abs(t - leftS) > eps &&
-          Math.abs(t - leftE) > eps &&
-          Math.abs(t - rightS) > eps &&
-          Math.abs(t - rightE) > eps
-        );
-      });
-
-      const proposedCut = cut0 + delta;
-      const snappedCut = snapToNearest(proposedCut, laneEdges, EDGE_SNAP_SEC);
-      delta = snappedCut - cut0;
-
-      // Constraints:
-      // leftOut = leftOut0 + delta
-      // rightIn = rightIn0 + delta
-      // rightStart = rightStart0 + delta
-      // rightEnd stays fixed because duration shrinks/grows with in shift
-      // Helper: if we don't know srcDur yet, allow extension (Infinity)
         const safeSrcDur = (d) => (Number.isFinite(d) && d > 0.01 ? d : Infinity);
-
-        // ---- Constraints ----
-        // We’re moving the CUT by delta.
-        // left.out increases by delta (left gets longer if delta > 0)
-        // right.in increases by delta AND right.start increases by delta (right gets shorter if delta > 0)
-        // Outer edges fixed: left.start fixed, right.end fixed.
 
         const leftSrcLimit = safeSrcDur(leftSrcDur);
         const rightSrcLimit = safeSrcDur(rightSrcDur);
 
-        // 1) Left clip length >= MIN_LEN
-        // leftLen = (leftOut0 + delta) - leftIn0
-        const leftMinDelta = (leftIn0 + MIN_LEN) - leftOut0;
+        const leftMinDelta = leftIn0 + MIN_LEN - leftOut0;
+        const leftMaxDelta = leftSrcLimit - leftOut0;
 
-        // 2) Left out cannot exceed source duration (if known)
-        const leftMaxDelta = leftSrcLimit - leftOut0; // Infinity if unknown => no constraint
-
-        // 3) Right in cannot go below 0
         const rightMinDelta = 0 - rightIn0;
-
-        // 4) Right clip length >= MIN_LEN
-        // rightLen = rightOut0 - (rightIn0 + delta)
-        const rightMaxDelta = (rightOut0 - MIN_LEN) - rightIn0;
-
-        // 5) Right start cannot go below 0 (timeline constraint)
-        const startMinDelta = -rightStart0;
-
-        // 6) Also keep the cut from going beyond the fixed right end - MIN_LEN (timeline version of #4)
-        const cutMaxDeltaByRightLen = (rightEnd0 - MIN_LEN) - cut0;
-
-        // Optional: if right source duration is known and rightOut0 exceeds it, clamp the effective rightOut limit.
-        // (This avoids weirdness if metadata arrives late and out is past EOF.)
         const effectiveRightOut0 = Math.min(rightOut0, rightSrcLimit);
 
-        
-
-        // Recompute #4/#6 using the effective out (still works when Infinity)
-        const rightMaxDelta2 = (effectiveRightOut0 - MIN_LEN) - rightIn0;
+        const rightMaxDelta2 = effectiveRightOut0 - MIN_LEN - rightIn0;
         const rightEnd0b = rightStart0 + Math.max(0, effectiveRightOut0 - rightIn0);
-        const cutMaxDeltaByRightLen2 = (rightEnd0b - MIN_LEN) - cut0;
+        const cutMaxDeltaByRightLen2 = rightEnd0b - MIN_LEN - cut0;
+
+        const startMinDelta = -rightStart0;
 
         const minDelta = Math.max(leftMinDelta, rightMinDelta, startMinDelta);
         const maxDelta = Math.min(leftMaxDelta, rightMaxDelta2, cutMaxDeltaByRightLen2);
 
-        // If constraints invert, just lock movement (prevents NaNs / jitter)
         if (!(minDelta <= maxDelta)) {
           delta = 0;
         } else {
           delta = clamp(delta, minDelta, maxDelta);
         }
 
-      const nextLeftOut = leftOut0 + delta;
-      const nextRightIn = rightIn0 + delta;
-      const nextRightStart = rightStart0 + delta;
+        const nextLeftOut = leftOut0 + delta;
+        const nextRightIn = rightIn0 + delta;
+        const nextRightStart = rightStart0 + delta;
 
-      // Update tooltip (show left length change)
-      const oldLeftLen = Math.max(0, leftOut0 - leftIn0);
-      const newLeftLen = Math.max(0, nextLeftOut - leftIn0);
-      const deltaLen = newLeftLen - oldLeftLen;
+        const oldLeftLen = Math.max(0, leftOut0 - leftIn0);
+        const newLeftLen = Math.max(0, nextLeftOut - leftIn0);
+        const deltaLen = newLeftLen - oldLeftLen;
 
-      setTrimTip({
-        x: e.clientX + 12,
-        y: e.clientY + 12,
-        text: `Roll: ${fmtTime(newLeftLen)} (${fmtDelta(deltaLen)})`,
-      });
+        setTrimTip({
+          x: e.clientX + 12,
+          y: e.clientY + 12,
+          text: `Roll: ${fmtTime(newLeftLen)} (${fmtDelta(deltaLen)})`,
+        });
+
+        return prev.map((c) => {
+          if (c.key === left.key) return { ...c, out: nextLeftOut };
+          if (c.key === right.key) return { ...c, start: nextRightStart, in: nextRightIn };
+          return c;
+        });
+      }
+
+      const srcDur = Number(primary.sourceDuration || orig.sourceDuration || 0);
+      const start0 = Number(orig.start || 0);
+      const in0 = Number(orig.in || 0);
+      const out0 = Number(orig.out || 0);
+
+      const oldStart = start0;
+      const oldEnd = Number(orig.end || start0 + (out0 - in0));
+      const oldLen = Math.max(0, out0 - in0);
+
+      let nextPrimary = primary;
+
+      let delta = 0;
+      let thresholdT = null;
+      let affect = "none";
+
+      if (side === "r") {
+        let nextOut = out0 + dxSeconds;
+        if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
+        nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur || nextOut);
+
+        const laneEdges = getLaneEdgesSeconds(prev, {
+          kind: laneKind,
+          track: laneTrack,
+          excludeKey: key,
+        });
+
+        let nextEnd = oldStart + Math.max(0, nextOut - in0);
+        const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
+
+        nextEnd = snappedEnd;
+        nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur || in0 + (nextEnd - oldStart));
+
+        nextPrimary = { ...primary, out: nextOut };
+
+        const newLen = Math.max(0, nextOut - in0);
+        const deltaLen = newLen - oldLen;
+
+        setTrimTip({
+          x: e.clientX + 12,
+          y: e.clientY + 12,
+          text: formatTrimTooltip({
+            side,
+            length: newLen,
+            deltaLength: deltaLen,
+            isRipple,
+          }),
+        });
+
+        if (isRipple) {
+          const newEnd = oldStart + Math.max(0, nextOut - in0);
+          delta = newEnd - oldEnd;
+          thresholdT = oldEnd;
+          affect = "right";
+        }
+      } else {
+        const laneEdges = getLaneEdgesSeconds(prev, {
+          kind: laneKind,
+          track: laneTrack,
+          excludeKey: key,
+        });
+
+        let d = dxSeconds;
+
+        d = Math.max(d, -start0);
+        d = Math.max(d, -in0);
+        d = Math.min(d, out0 - MIN_LEN - in0);
+
+        let nextStart = start0 + d;
+        let nextIn = in0 + d;
+
+        const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
+        let dd = snappedStart - start0;
+
+        dd = Math.max(dd, -start0);
+        dd = Math.max(dd, -in0);
+        dd = Math.min(dd, out0 - MIN_LEN - in0);
+
+        nextStart = start0 + dd;
+        nextIn = in0 + dd;
+
+        if (e.shiftKey) {
+          const s2 = snapSeconds(nextStart, 1);
+          let dd2 = s2 - start0;
+
+          dd2 = Math.max(dd2, -start0);
+          dd2 = Math.max(dd2, -in0);
+          dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
+
+          nextStart = start0 + dd2;
+          nextIn = in0 + dd2;
+        }
+
+        nextPrimary = { ...primary, start: nextStart, in: nextIn };
+
+        const newLen = Math.max(0, out0 - nextIn);
+        const deltaLen = newLen - oldLen;
+
+        setTrimTip({
+          x: e.clientX + 12,
+          y: e.clientY + 12,
+          text: formatTrimTooltip({
+            side,
+            length: newLen,
+            deltaLength: deltaLen,
+            isRipple,
+          }),
+        });
+
+        if (isRipple) {
+          delta = nextStart - oldStart;
+          thresholdT = oldStart;
+          affect = "left";
+        } else {
+          affect = "none";
+        }
+      }
+
+      if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
+        return prev.map((c) => (c.key === key ? nextPrimary : c));
+      }
+
+      const laneStarts = orig.laneStarts || new Map();
 
       return prev.map((c) => {
-        if (c.key === left.key) return { ...c, out: nextLeftOut };
-        if (c.key === right.key) return { ...c, start: nextRightStart, in: nextRightIn };
+        if (!c) return c;
+
+        if (c.key === key) return nextPrimary;
+
+        if (c.kind !== laneKind) return c;
+        if ((Number(c.track) || 0) !== laneTrack) return c;
+
+        const baseStart = Number(laneStarts.get(c.key)) || 0;
+
+        if (affect === "right") {
+          if (baseStart >= thresholdT - 1e-6) {
+            return { ...c, start: Math.max(0, baseStart + delta) };
+          }
+          return c;
+        }
+
+        if (affect === "left") {
+          if (baseStart < thresholdT - 1e-6) {
+            return { ...c, start: Math.max(0, baseStart + delta) };
+          }
+          return c;
+        }
+
         return c;
       });
-    }
-
-    // ---- TRIM / RIPPLE (your existing logic) ----
-    const srcDur = Number(primary.sourceDuration || orig.sourceDuration || 0);
-    const start0 = Number(orig.start || 0);
-    const in0 = Number(orig.in || 0);
-    const out0 = Number(orig.out || 0);
-
-    const oldStart = start0;
-    const oldEnd = Number(orig.end || (start0 + (out0 - in0)));
-    const oldLen = Math.max(0, out0 - in0);
-
-    let nextPrimary = primary;
-
-    // Ripple shifting info
-    let delta = 0;
-    let thresholdT = null;
-    let affect = "none"; // "right" | "left" | "none"
-
-    if (side === "r") {
-      // RIGHT trim: changes OUT
-      let nextOut = out0 + dxSeconds;
-      if (e.shiftKey) nextOut = snapSeconds(nextOut, 1);
-      nextOut = clamp(nextOut, in0 + MIN_LEN, srcDur || nextOut);
-
-      // Snap the moving END edge on timeline
-      const laneEdges = getLaneEdgesSeconds(prev, {
-        kind: laneKind,
-        track: laneTrack,
-        excludeKey: key,
-      });
-
-      let nextEnd = oldStart + Math.max(0, nextOut - in0);
-      const snappedEnd = snapToNearest(nextEnd, laneEdges, EDGE_SNAP_SEC);
-
-      nextEnd = snappedEnd;
-      nextOut = clamp(in0 + (nextEnd - oldStart), in0 + MIN_LEN, srcDur || (in0 + (nextEnd - oldStart)));
-
-      nextPrimary = { ...primary, out: nextOut };
-
-      const newLen = Math.max(0, nextOut - in0);
-      const deltaLen = newLen - oldLen;
-
-      setTrimTip({
-        x: e.clientX + 12,
-        y: e.clientY + 12,
-        text: formatTrimTooltip({
-          side,
-          inTime: in0,
-          outTime: nextOut,
-          length: newLen,
-          deltaLength: deltaLen,
-          isRipple,
-        }),
-      });
-
-      if (isRipple) {
-        const newEnd = oldStart + Math.max(0, nextOut - in0);
-        delta = newEnd - oldEnd;
-        thresholdT = oldEnd;
-        affect = "right";
-      }
-    } else {
-      // LEFT trim
-      if (!isRipple) {
-        // NORMAL left trim: move START and IN together, keeping right edge fixed.
-        const laneEdges = getLaneEdgesSeconds(prev, {
-          kind: laneKind,
-          track: laneTrack,
-          excludeKey: key,
-        });
-
-        let d = dxSeconds;
-
-        d = Math.max(d, -start0);
-        d = Math.max(d, -in0);
-        d = Math.min(d, out0 - MIN_LEN - in0);
-
-        let nextStart = start0 + d;
-        let nextIn = in0 + d;
-
-        const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
-        let dd = snappedStart - start0;
-
-        dd = Math.max(dd, -start0);
-        dd = Math.max(dd, -in0);
-        dd = Math.min(dd, out0 - MIN_LEN - in0);
-
-        nextStart = start0 + dd;
-        nextIn = in0 + dd;
-
-        if (e.shiftKey) {
-          const s2 = snapSeconds(nextStart, 1);
-          let dd2 = s2 - start0;
-
-          dd2 = Math.max(dd2, -start0);
-          dd2 = Math.max(dd2, -in0);
-          dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
-
-          nextStart = start0 + dd2;
-          nextIn = in0 + dd2;
-        }
-
-        nextPrimary = { ...primary, start: nextStart, in: nextIn };
-
-        const newLen = Math.max(0, out0 - nextIn);
-        const deltaLen = newLen - oldLen;
-
-        setTrimTip({
-          x: e.clientX + 12,
-          y: e.clientY + 12,
-          text: formatTrimTooltip({
-            side,
-            inTime: nextIn,
-            outTime: out0,
-            length: newLen,
-            deltaLength: deltaLen,
-            isRipple: false,
-          }),
-        });
-
-        affect = "none";
-      } else {
-        // RIPPLE left-edge trim (backwards) — your fixed logic
-        const laneEdges = getLaneEdgesSeconds(prev, {
-          kind: laneKind,
-          track: laneTrack,
-          excludeKey: key,
-        });
-
-        let d = dxSeconds;
-
-        d = Math.max(d, -start0);
-        d = Math.max(d, -in0);
-        d = Math.min(d, out0 - MIN_LEN - in0);
-
-        let nextStart = start0 + d;
-        let nextIn = in0 + d;
-
-        const snappedStart = snapToNearest(nextStart, laneEdges, EDGE_SNAP_SEC);
-        let dd = snappedStart - start0;
-
-        dd = Math.max(dd, -start0);
-        dd = Math.max(dd, -in0);
-        dd = Math.min(dd, out0 - MIN_LEN - in0);
-
-        nextStart = start0 + dd;
-        nextIn = in0 + dd;
-
-        if (e.shiftKey) {
-          const s2 = snapSeconds(nextStart, 1);
-          let dd2 = s2 - start0;
-
-          dd2 = Math.max(dd2, -start0);
-          dd2 = Math.max(dd2, -in0);
-          dd2 = Math.min(dd2, out0 - MIN_LEN - in0);
-
-          nextStart = start0 + dd2;
-          nextIn = in0 + dd2;
-        }
-
-        nextPrimary = { ...primary, start: nextStart, in: nextIn };
-
-        const newLen = Math.max(0, out0 - nextIn);
-        const deltaLen = newLen - oldLen;
-
-        setTrimTip({
-          x: e.clientX + 12,
-          y: e.clientY + 12,
-          text: formatTrimTooltip({
-            side,
-            inTime: nextIn,
-            outTime: out0,
-            length: newLen,
-            deltaLength: deltaLen,
-            isRipple: true,
-          }),
-        });
-
-        delta = nextStart - oldStart;
-        thresholdT = oldStart;
-        affect = "left";
-      }
-    }
-
-    if (!isRipple || affect === "none" || Math.abs(delta) < 1e-9) {
-      return prev.map((c) => (c.key === key ? nextPrimary : c));
-    }
-
-    const laneStarts = orig.laneStarts || new Map();
-
-    return prev.map((c) => {
-      if (!c) return c;
-
-      if (c.key === key) return nextPrimary;
-
-      if (c.kind !== laneKind) return c;
-      if ((Number(c.track) || 0) !== laneTrack) return c;
-
-      const baseStart = Number(laneStarts.get(c.key)) || 0;
-
-      if (affect === "right") {
-        if (baseStart >= thresholdT - 1e-6) {
-          return { ...c, start: Math.max(0, baseStart + delta) };
-        }
-        return c;
-      }
-
-      if (affect === "left") {
-        if (baseStart < thresholdT - 1e-6) {
-          return { ...c, start: Math.max(0, baseStart + delta) };
-        }
-        return c;
-      }
-
-      return c;
     });
-  });
-}
+  }
 
-function onTrimPointerUp(e) {
-  if (!isTrimmingRef.current) return;
+  function onTrimPointerUp(e) {
+    if (!isTrimmingRef.current) return;
 
-  isTrimmingRef.current = false;
-  trimSideRef.current = null;
-  trimKeyRef.current = null;
-  trimStartXRef.current = 0;
-  trimOrigRef.current = null;
+    isTrimmingRef.current = false;
+    trimSideRef.current = null;
+    trimKeyRef.current = null;
+    trimStartXRef.current = 0;
+    trimOrigRef.current = null;
 
-  setTrimTip(null);
+    setTrimTip(null);
 
-  try {
-    e.currentTarget.releasePointerCapture(e.pointerId);
-  } catch {}
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
 
-  // ✅ After moving clips, re-evaluate audio at current playhead
-  requestAnimationFrame(() => {
-    const t = playheadRef.current ?? playhead;
-    ensureAudioLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current });
-  });
-}
-
+    requestAnimationFrame(() => {
+      const t = playheadRef.current ?? playhead;
+      syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
+    });
+  }
 
   function findAdjacentOnLane(prevClips, { kind, track, atTime, direction, excludeKeys = [] }) {
-  const EPS = 1e-4;
-  const ex = new Set(excludeKeys || []);
-  const candidates = prevClips.filter((c) => {
-    if (!c) return false;
-    if (ex.has(c.key)) return false;
-    if (c.kind !== kind) return false;
-    if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
-    return true;
-  });
+    const EPS = 1e-4;
+    const ex = new Set(excludeKeys || []);
+    const candidates = prevClips.filter((c) => {
+      if (!c) return false;
+      if (ex.has(c.key)) return false;
+      if (c.kind !== kind) return false;
+      if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
+      return true;
+    });
 
-  if (direction === "right") {
-    // find clip whose start is ~ atTime
-    let best = null;
-    let bestD = Infinity;
-    for (const c of candidates) {
-      const s = Number(c.start) || 0;
-      const d = Math.abs(s - atTime);
-      if (d < bestD) {
-        bestD = d;
-        best = c;
+    if (direction === "right") {
+      let best = null;
+      let bestD = Infinity;
+      for (const c of candidates) {
+        const s = Number(c.start) || 0;
+        const d = Math.abs(s - atTime);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
       }
+      return bestD <= 0.2 ? best : null;
     }
-    return bestD <= 0.2 ? best : null; // tolerance for "butted" edits
-  }
 
-  if (direction === "left") {
-    // find clip whose end is ~ atTime
-    let best = null;
-    let bestD = Infinity;
-    for (const c of candidates) {
-      const e = (Number(c.start) || 0) + clipLen(c);
-      const d = Math.abs(e - atTime);
-      if (d < bestD) {
-        bestD = d;
-        best = c;
+    if (direction === "left") {
+      let best = null;
+      let bestD = Infinity;
+      for (const c of candidates) {
+        const e = (Number(c.start) || 0) + clipLen(c);
+        const d = Math.abs(e - atTime);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
       }
+      return bestD <= 0.02 ? best : null;
     }
-    return bestD <= 0.02 ? best : null;
+
+    return null;
   }
-
-  return null;
-}
-
-
-  
+  // --- END TRIM BLOCK ---
 
   // -------- Library drag/drop --------
   function onLibDragStart(e, v) {
@@ -3309,18 +3503,13 @@ function onTrimPointerUp(e) {
     if (!v) return;
 
     const t = getTimeFromClientX(e.clientX);
-
     const isAudio = isAudioMedia(v);
-
-    // Detect which lane you dropped on (based on mouse Y)
     const lane = getLaneFromClientY(e.clientY);
 
     if (isAudio) {
-      // If user dropped onto an audio lane, use that track. Otherwise default to A1 (track 0).
-      const targetTrack = lane?.kind === "audio" ? (Number(lane.track) || 0) : 0;
+      const targetTrack = lane?.kind === "audio" ? Number(lane.track) || 0 : 0;
       await addMediaToTimelineAt(v, t, { forceKind: "audio", forceTrack: targetTrack });
     } else {
-      // Video always goes to V1 regardless of where you drop
       await addMediaToTimelineAt(v, t, { forceKind: "video", forceTrack: 0 });
     }
   }
@@ -3348,16 +3537,16 @@ function onTrimPointerUp(e) {
     return ticks;
   }, [timelineWidth, PPS]);
 
-  // -------- Publish modal timeline payload (VIDEOS ONLY for now) --------
+  // ✅ Publish modal timeline payload (VIDEO + AUDIO)
   const publishTimeline = useMemo(() => {
-    return clipsSorted
-      .filter((c) => c?.kind === "video")
-      .map((c) => ({
-        videoId: c?.video?.id,
-        start: Number(c.start || 0),
-        in: Number(c.in || 0),
-        out: Number(c.out || 0),
-      }));
+    return clipsSorted.map((c) => ({
+      kind: c.kind,                 // "video" | "audio"
+      track: Number(c.track || 0),  // audio lane index
+      videoId: c?.videoId ?? c?.video?.id ?? null,
+      start: Number(c.start || 0),
+      in: Number(c.in || 0),
+      out: Number(c.out || 0),
+    }));
   }, [clipsSorted]);
 
   const hasAnyClips = clipsSorted.length > 0;
@@ -3369,33 +3558,15 @@ function onTrimPointerUp(e) {
   function toggleMute() {
     const next = !muted;
     setMuted(next);
-
-    const v = videoRef.current;
-    const a = audioRef.current;
-    if (v) v.muted = next;
-    if (a) a.muted = next;
   }
 
   function setPlayerVolume(next) {
     const x = clamp(Number(next), 0, 1);
     setVolume(x);
-
-    const v = videoRef.current;
-    const a = audioRef.current;
-
     if (x > 0) setMuted(false);
-
-    if (v) {
-      v.volume = x;
-      if (x > 0) v.muted = false;
-    }
-    if (a) {
-      a.volume = x;
-      if (x > 0) a.muted = false;
-    }
   }
 
-  // Light alignment when idle (keeps poster/first frame sane)
+  // Light alignment when idle
   useEffect(() => {
     if (!hasAnyClips) return;
     if (wantedPlayRef.current) return;
@@ -3425,7 +3596,6 @@ function onTrimPointerUp(e) {
       const tag = (e.target?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
-      // ✅ Don't switch tools while using modifier shortcuts (Ctrl/Cmd/Alt)
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       const k = (e.key || "").toLowerCase();
@@ -3435,7 +3605,7 @@ function onTrimPointerUp(e) {
       if (k === "b") setTool("ripple");
       if (k === "y") setTool("slip");
       if (k === "n") setTool("roll");
-      if (k === "a") setTool("trackFwd"); // ✅ Track Select Forward (A)
+      if (k === "a") setTool("trackFwd");
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -3477,21 +3647,27 @@ function onTrimPointerUp(e) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [libraryVideos]);
 
-  // ✅ Button icon derived from actual state
   const playPauseIcon = useMemo(() => {
     const v = videoRef.current;
     const actuallyPlaying = v ? !v.paused && !v.ended : isPlaying;
     return actuallyPlaying ? "⏸" : "▶";
   }, [isPlaying, viewerSrc, playhead]);
 
+  // ✅ CSS-independent positioning: use transform for playhead visuals
+  const playheadX = useMemo(() => (Number(playhead) || 0) * PPS, [playhead, PPS]);
+
   return (
     <div
       className={`genEditWrap ${
-        tool === "razor" ? "toolRazor"
-        : tool === "slip" ? "toolSlip"
-        : tool === "ripple" ? "toolRipple"
-        : tool === "roll" ? "toolRoll"
-        : "toolSelect"
+        tool === "razor"
+          ? "toolRazor"
+          : tool === "slip"
+          ? "toolSlip"
+          : tool === "ripple"
+          ? "toolRipple"
+          : tool === "roll"
+          ? "toolRoll"
+          : "toolSelect"
       }`}
     >
       <GeneratePublishModal
@@ -3543,9 +3719,7 @@ function onTrimPointerUp(e) {
 
           <div className="genEditLibraryBody">
             {loadingLib ? (
-              <div className="genEditEmpty">
-                {libTab === "audio" ? "Loading your audio…" : "Loading your videos…"}
-              </div>
+              <div className="genEditEmpty">{libTab === "audio" ? "Loading your audio…" : "Loading your videos…"}</div>
             ) : libErr ? (
               <div className="genEditEmpty">{libErr}</div>
             ) : activeLibList.length === 0 ? (
@@ -3558,7 +3732,11 @@ function onTrimPointerUp(e) {
               <div className="genEditLibList">
                 {activeLibList.map((v) => {
                   const isActive = selectedVideo?.id === v.id;
-                  const src = thumbUrl(v);
+                  const isAudio = isAudioMedia(v);
+
+                  // ✅ only compute thumbs for video
+                  const src = !isAudio ? thumbUrl(v) : "";
+
                   const id = String(v.id);
 
                   const provided = Number(v.durationSeconds);
@@ -3588,7 +3766,34 @@ function onTrimPointerUp(e) {
                       title="Drag onto the timeline"
                     >
                       <div className="genEditLibThumb">
-                        {src ? <img src={src} alt="" /> : <div className="genEditThumbPh" />}
+                        {isAudio ? (
+                          <div
+                            className={`genEditAudioPh ${String(previewAudioId) === String(v.id) ? "isPreviewing" : ""}`}
+                            role="button"
+                            tabIndex={0}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleLibraryAudioPreview(v);
+                            }}
+                          >
+                            {/* Default musical note */}
+                            <span className="genEditAudioNote">🎵</span>
+
+                            {/* Hover / active icon */}
+                            <span className="genEditAudioOverlayIcon">
+                              {String(previewAudioId) === String(v.id) ? "⏹" : "▶"}
+                            </span>
+                          </div>
+                        ) : src ? (
+                          <img src={src} alt="" />
+                        ) : (
+                          <div className="genEditThumbPh" />
+                        )}
                       </div>
 
                       <div className="genEditLibMeta">
@@ -3597,7 +3802,7 @@ function onTrimPointerUp(e) {
                         </div>
                         <div className="genEditLibSub">
                           <span className="muted">Duration: </span> {durLabel}
-                          {isAudioMedia(v) ? <span className="muted"> · Audio</span> : null}
+                          {isAudio ? <span className="muted"> · Audio</span> : null}
                         </div>
                       </div>
 
@@ -3630,7 +3835,12 @@ function onTrimPointerUp(e) {
                   }}
                 />
               ) : (
-                <button type="button" className="genEditTitleEditBtn" onClick={() => setIsEditingTitle(true)} title="Rename sequence">
+                <button
+                  type="button"
+                  className="genEditTitleEditBtn"
+                  onClick={() => setIsEditingTitle(true)}
+                  title="Rename sequence"
+                >
                   <span>{sequenceTitle}</span>
                   <span className="genEditPencil" aria-hidden="true">
                     ✎
@@ -3663,7 +3873,9 @@ function onTrimPointerUp(e) {
           {/* Player */}
           <div className="genEditPlayerShell">
             <div className="genEditPlayerTop">
-              <div className="genEditPlayerLabel">{currentVideoClip?.video?.title ? `Playing: ${currentVideoClip.video.title}` : "Playback"}</div>
+              <div className="genEditPlayerLabel">
+                {currentVideoClip?.video?.title ? `Playing: ${currentVideoClip.video.title}` : "Playback"}
+              </div>
 
               <div className="genEditPlayerRight">
                 <span className="muted">Playhead:</span> <span>{fmtTime(playhead)}</span>
@@ -3675,10 +3887,23 @@ function onTrimPointerUp(e) {
                 <div className="genEditVideoWrap">
                   <div className="genEditVideoStage">
                     <video ref={videoRef} className="genEditVideo" preload="auto" playsInline src={viewerSrc} />
-                    <audio ref={audioRef} preload="auto" />
+                    <div ref={audioHostRef} style={{ display: "none" }} />
+                    <audio
+                      ref={previewAudioRef}
+                      preload="auto"
+                      style={{ display: "none" }}
+                      playsInline
+                      onEnded={() => setPreviewAudioId(null)}
+                    />
 
                     <div className="genEditOverlayControls" role="group" aria-label="Player controls">
-                      <button type="button" className="genEditPBtn" onClick={togglePlay} disabled={!hasAnyClips} aria-label={isPlaying ? "Pause" : "Play"}>
+                      <button
+                        type="button"
+                        className="genEditPBtn"
+                        onClick={togglePlay}
+                        disabled={!hasAnyClips}
+                        aria-label={isPlaying ? "Pause" : "Play"}
+                      >
                         {playPauseIcon}
                       </button>
 
@@ -3770,10 +3995,8 @@ function onTrimPointerUp(e) {
                 onClick={() => setTool("trackFwd")}
                 title="Track Select Forward (A)"
               >
-                {/* placeholder icon until you swap it */}
                 ⇥
               </button>
-
             </div>
 
             <div className="genEditZoomRight">
@@ -3816,7 +4039,6 @@ function onTrimPointerUp(e) {
               <div className="genEditLaneGutter" aria-hidden="true">
                 <div className="genEditGutterSpacer" />
 
-                {/* V1 */}
                 {VIDEO_TRACKS.map((lane) => (
                   <div key={`${lane.kind}-${lane.track}`} className={`genEditGutterCell ${lane.kind}`}>
                     <div className="genEditGutterCellInner">
@@ -3825,7 +4047,6 @@ function onTrimPointerUp(e) {
                   </div>
                 ))}
 
-                {/* A lanes */}
                 {AUDIO_TRACKS.map((lane) => (
                   <div key={`${lane.kind}-${lane.track}`} className={`genEditGutterCell ${lane.kind}`}>
                     <div className="genEditGutterCellInner">
@@ -3850,7 +4071,6 @@ function onTrimPointerUp(e) {
                   </div>
                 ))}
 
-                {/* Add audio row */}
                 <button
                   type="button"
                   className="genEditAddLaneBtn"
@@ -3869,22 +4089,16 @@ function onTrimPointerUp(e) {
               {/* Scrollable time area */}
               <div className="genEditTimelineViewport" ref={timelineViewportRef}>
                 <div className="genEditTimelineScroll" ref={timelineScrollRef}>
-                  {/* ✅ Time stack: header (timecode row) + lanes share same coordinate space */}
                   <div
                     ref={timelineOriginRef}
                     className="genEditTimeStack"
                     style={{ width: timelineWidth }}
-                    onPointerMove={(e) => {
-                      onTimelinePointerMove(e);
-                    }}
-                    onPointerLeave={() => {
-                      onTimelinePointerLeave();
-                    }}
+                    onPointerMove={(e) => onTimelinePointerMove(e)}
+                    onPointerLeave={() => onTimelinePointerLeave()}
                     onDragOver={onTimelineDragOver}
                     onDrop={onTimelineDrop}
                     role="presentation"
                   >
-                    {/* ✅ Header row: ONLY place where click-to-set playhead works */}
                     <div className="genEditTimeHeader">
                       <div className="genEditTimelineRuler" aria-hidden="true">
                         {rulerTicks.map(({ t, major }) => {
@@ -3900,8 +4114,9 @@ function onTrimPointerUp(e) {
                       <div className="genEditTimeHeaderHit" onPointerDown={onTimeHeaderPointerDown} />
                     </div>
 
-                    {/* Razor preview line spans whole stack */}
-                    {tool === "razor" && razorHoverT != null ? <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} /> : null}
+                    {tool === "razor" && razorHoverT != null ? (
+                      <div className="genEditRazorLine" style={{ left: `${razorHoverT * PPS}px` }} />
+                    ) : null}
 
                     {boxSel ? (
                       <div
@@ -3915,11 +4130,22 @@ function onTrimPointerUp(e) {
                       />
                     ) : null}
 
-                    {/* Playhead spans whole stack; handle is visually in the header */}
-                    <div className="genEditPlayheadLine" style={{ left: `${playhead * PPS}px` }} />
+                    {/* ✅ transform-based playhead rendering (more robust than left updates) */}
+                    <div
+                      className="genEditPlayheadLine"
+                      style={{
+                        transform: `translateX(${playheadX}px)`,
+                        willChange: "transform",
+                      }}
+                    />
+
                     <div
                       className="genEditPlayheadHandle"
-                      style={{ left: `${playhead * PPS}px` }}
+                      style={{
+                        transform: `translateX(${playheadX}px) translateX(-50%)`, // ✅ center handle on the line
+                        willChange: "transform",
+                        touchAction: "none",
+                      }}
                       onPointerDown={onPlayheadPointerDown}
                       role="slider"
                       aria-label="Playhead"
@@ -3929,7 +4155,6 @@ function onTrimPointerUp(e) {
                       tabIndex={0}
                     />
 
-                    {/* Lanes */}
                     <div className="genEditTimeOrigin" onPointerDown={onLanesPointerDown} onMouseDown={onTimelineBackgroundPointerDown}>
                       <div className="genEditLanes">
                         {LANES.map((lane) => {
@@ -3982,7 +4207,7 @@ function onTrimPointerUp(e) {
 
                                       <div className="genEditClipTop">
                                         <div className="genEditClipTitle" title={c?.video?.title || ""}>
-                                          {c?.video?.title || (c.kind === "audio" ? "Audio clip" : "Untitled clip")}
+                                          {resolveMediaForClip(c)?.title || (c.kind === "audio" ? "Audio clip" : "Untitled clip")}
                                         </div>
 
                                         <button
@@ -3991,9 +4216,7 @@ function onTrimPointerUp(e) {
                                           onClick={(e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
-
-                                            if (e.shiftKey) rippleDelete([c.key]);
-                                            else removeFromTimeline([c.key]);
+                                            removeFromTimeline([c.key]);
                                           }}
                                           aria-label="Remove clip"
                                           title="Remove clip"
