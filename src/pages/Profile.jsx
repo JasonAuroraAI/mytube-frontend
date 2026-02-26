@@ -114,6 +114,11 @@ export default function Profile({ user, onRequireLogin }) {
     setSearchParams(sp, { replace: true });
   }
 
+  function isLibraryAsset(video) {
+  const scope = String(video?.asset_scope ?? video?.assetScope ?? "").toLowerCase().trim();
+  return scope === "library";
+}
+
   function handleSearchSubmit(e) {
     e.preventDefault();
     setParam({ q: localQ });
@@ -190,7 +195,9 @@ export default function Profile({ user, onRequireLogin }) {
   }, [username, sort]);
 
   const uploads = useMemo(() => {
-    const filtered = uploadsRaw.filter((v) => matchesQuery(v, urlQ));
+    const filtered = uploadsRaw
+    .filter((v) => !isLibraryAsset(v))      // ✅ hide library assets on profile
+    .filter((v) => matchesQuery(v, urlQ));
 
     const sorted = [...filtered];
     if (sort === "oldest") {
