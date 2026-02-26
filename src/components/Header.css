@@ -167,3 +167,25 @@
   font-size: 12px;
   margin-left: 12px;
 }
+
+/* Kill any unexpected focus ring / border styles on the rating (prod-only issue) */
+.header .user-info .rating {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+/* If it’s coming from a global :focus-visible rule */
+.header .user-info .rating:focus,
+.header .user-info .rating:focus-visible {
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+/* In case something is styling all spans or adding an inset ring */
+.header .user-info .rating * {
+  outline: 0 !important;
+  box-shadow: none !important;
+}
