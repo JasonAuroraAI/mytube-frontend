@@ -244,3 +244,40 @@
   background: rgba(255, 100, 100, 0.18);
   border-color: rgba(255, 100, 100, 0.50);
 }
+
+/* Ensure overlay positioning works */
+.thumb-wrapper {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Make both fill the same box */
+.thumb-wrapper img,
+.thumb-wrapper video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+/* Layer the preview video on top of the image */
+.thumbPreview {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none; /* clicks still go to card */
+  transition: opacity 120ms ease;
+}
+
+.thumbPreview.isVisible {
+  opacity: 1;
+}
+
+/* Fade the image out when preview shows */
+.thumbImg {
+  transition: opacity 120ms ease;
+}
+
+.thumbImg.isHidden {
+  opacity: 0;
+}

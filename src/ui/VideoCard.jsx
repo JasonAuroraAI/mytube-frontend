@@ -1,7 +1,8 @@
 // VideoCard.jsx
 import "./VideoCard.css";
 import { useNavigate, NavLink } from "react-router-dom";
-import { thumbUrl } from "../api.js";
+import { thumbUrl, streamUrl } from "../api.js";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function formatViews(n) {
   if (n == null) return null;
@@ -26,36 +27,32 @@ export default function VideoCard({
   video,
   locked = false,
   onRequireLogin,
-
-  // ✅ ONLY Profile page should pass this.
-  // When not passed (e.g. Home), no delete UI renders.
   onRequestDelete = null,
-
-  // ✅ current logged-in user
   user = null,
   me = null,
 }) {
   const navigate = useNavigate();
+
   const src = thumbUrl(video) || null;
 
+  // Preview src (must be directly playable by <video> for this approach)
+  const previewSrc = useMemo(() => {
+    try {
+      return streamUrl?.(video) || null;
+    } catch {
+      return null;
+    }
+  }, [video]);
 
   const views = formatViews(video.views);
   const duration =
-    video.durationText && video.durationText !== "0:00"
-      ? video.durationText
-      : null;
+    video.durationText && video.durationText !== "0:00" ? video.durationText : null;
 
   const ratingAvg = formatAvg(video.ratingAvg);
   const ratingCount = Number(video.ratingCount || 0);
 
-  // Owner fields differ by endpoint:
-  // - /api/videos -> channelUsername / channelDisplayName
-  // - /api/profile/u/:username/videos -> creatorUsername / creatorDisplayName
   const ownerUsername =
-    video.channelUsername ||
-    video.creatorUsername ||
-    video.creator_username ||
-    null;
+    video.channelUsername || video.creatorUsername || video.creator_username || null;
 
   const ownerDisplay =
     video.channelDisplayName ||
@@ -64,8 +61,6 @@ export default function VideoCard({
     ownerUsername;
 
   const currentUser = me || user;
-
-  // Optional if you later include IDs in API:
   const ownerUserId = video.userId ?? video.user_id ?? video.ownerId ?? null;
 
   const isOwner =
@@ -76,9 +71,6 @@ export default function VideoCard({
       ownerUserId != null &&
       Number(currentUser.id) === Number(ownerUserId));
 
-  // ✅ Only show delete when:
-  // 1) This card knows the user is the owner
-  // 2) The parent page provided a delete handler (Profile page)
   const canDelete = isOwner && typeof onRequestDelete === "function";
 
   function handleClick() {
@@ -99,6 +91,72 @@ export default function VideoCard({
     onRequestDelete?.(video);
   }
 
+  // -----------------------
+  // Hover preview behavior
+  // -----------------------
+  const videoRef = useRef(null);
+  const hoverTimerRef = useRef(null);
+  const [isHovering, setIsHovering] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const previewEnabled = !locked && !!previewSrc;
+
+  function startPreviewSoon() {
+    if (!previewEnabled) return;
+    setIsHovering(true);
+
+    // Add a tiny delay like YouTube (prevents accidental flicker)
+    clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setShowPreview(true);
+    }, 250);
+  }
+
+  function stopPreview() {
+    setIsHovering(false);
+    setShowPreview(false);
+    clearTimeout(hoverTimerRef.current);
+
+    const el = videoRef.current;
+    if (el) {
+      try {
+        el.pause();
+        el.currentTime = 0;
+      } catch {}
+    }
+  }
+
+  // When preview becomes visible, try to play
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    if (!showPreview) return;
+
+    // Always muted for autoplay policies
+    el.muted = true;
+    el.playsInline = true;
+
+    const play = async () => {
+      try {
+        // Start a bit in (optional). Comment out if you want frame 0.
+        // el.currentTime = 0.25;
+        await el.play();
+      } catch {
+        // Autoplay can fail; in that case user will still see the thumb.
+      }
+    };
+
+    play();
+  }, [showPreview]);
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      clearTimeout(hoverTimerRef.current);
+    };
+  }, []);
+
   return (
     <div
       className={`video-card ${locked ? "locked" : ""}`}
@@ -106,9 +164,35 @@ export default function VideoCard({
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
+      onMouseEnter={startPreviewSoon}
+      onMouseLeave={stopPreview}
+      onFocus={startPreviewSoon}
+      onBlur={stopPreview}
     >
       <div className="thumb-wrapper">
-        {src ? <img src={src} alt={video.title} loading="lazy" /> : null}
+        {/* Thumbnail */}
+        {src ? (
+          <img
+            className={`thumbImg ${showPreview ? "isHidden" : ""}`}
+            src={src}
+            alt={video.title}
+            loading="lazy"
+          />
+        ) : null}
+
+        {/* Hover preview */}
+        {previewEnabled ? (
+          <video
+            ref={videoRef}
+            className={`thumbPreview ${showPreview ? "isVisible" : ""}`}
+            src={previewSrc}
+            preload="metadata"
+            muted
+            playsInline
+            loop
+          />
+        ) : null}
+
         {duration && <div className="durationBadge">{duration}</div>}
 
         {locked && (
@@ -126,10 +210,7 @@ export default function VideoCard({
           <h4 className="video-title">{video.title}</h4>
 
           <div className="vTitleRight">
-            <div
-              className="vRating"
-              aria-label={`Rating ${ratingAvg} (${ratingCount})`}
-            >
+            <div className="vRating" aria-label={`Rating ${ratingAvg} (${ratingCount})`}>
               <span className="vStar">★</span>
               <span className="vAvg">{ratingAvg}</span>
               <span className="vCount">({ratingCount})</span>
