@@ -236,6 +236,7 @@ export default function GenerateEdit({ user }) {
   const [activeClipKey, setActiveClipKey] = useState(null);
   const [selectedClipKeys, setSelectedClipKeys] = useState(() => new Set());
   const selectedClipKeysRef = useRef(new Set());
+  const trimBoundaryLockRef = useRef(false);
 
   useEffect(() => {
     selectedClipKeysRef.current = selectedClipKeys;
@@ -287,6 +288,7 @@ export default function GenerateEdit({ user }) {
 
   // Player UI
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playIntent, setPlayIntent] = useState(false); // ✅ UI truth for Play/Pause button
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
 
@@ -469,23 +471,28 @@ export default function GenerateEdit({ user }) {
       .sort((a, b) => a.start - b.start || (Number(b.track) || 0) - (Number(a.track) || 0));
   }, [clips]);
 
-  function selectTrackForwardFrom({ kind, track, time, allLanes = false }) {
+  function selectTrackForwardFrom({ time }) {
     const t0 = Number(time) || 0;
     const EPS = 1e-6;
 
     const keys = clipsSorted
       .filter((c) => {
         if (!c) return false;
-
-        if (!allLanes) {
-          if (c.kind !== kind) return false;
-          if ((Number(c.track) || 0) !== (Number(track) || 0)) return false;
-        }
-
         const s = Number(c.start) || 0;
         return s >= t0 - EPS;
       })
-      .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+      .sort((a, b) => {
+        // primary: time
+        const ds = (Number(a.start) || 0) - (Number(b.start) || 0);
+        if (ds !== 0) return ds;
+
+        // secondary: keep a stable lane-ish ordering
+        const ak = a.kind === "video" ? 0 : 1;
+        const bk = b.kind === "video" ? 0 : 1;
+        if (ak !== bk) return ak - bk;
+
+        return (Number(a.track) || 0) - (Number(b.track) || 0);
+      })
       .map((c) => c.key);
 
     setSelectionFromKeys(keys, { additive: false });
@@ -921,6 +928,7 @@ useEffect(() => {
   loadedClipKeyRef.current = null;
   loadedSrcRef.current = "";
   wantedPlayRef.current = false;
+  setPlayIntent(false);
   setIsPlaying(false);
 
   // clear any audios (so they don't keep crackling between projects)
@@ -1042,12 +1050,7 @@ useEffect(() => {
 
       const t = getTimeFromClientX(e.clientX);
 
-      selectTrackForwardFrom({
-        kind: lane.kind,
-        track: Number(lane.track) || 0,
-        time: t,
-        allLanes: !!e.shiftKey,
-      });
+      selectTrackForwardFrom({ time: t });
 
       return;
     }
@@ -1937,6 +1940,7 @@ useEffect(() => {
         const ns = findNextVideoStart(timelineT);
         if (ns == null) {
           wantedPlayRef.current = false;
+          setPlayIntent(false);
           try {
             v.pause();
           } catch {}
@@ -2034,6 +2038,7 @@ useEffect(() => {
 
     const v = videoRef.current;
     if (!v) return;
+    enforceTrimmedOutBoundary(); // ✅ hard stop at trimmed out
 
     // Only run the "live" clock when user wants playback
     if (!wantedPlayRef.current) return;
@@ -2066,12 +2071,6 @@ useEffect(() => {
     if (now - lastAudioSyncCallRef.current > 90) {
       lastAudioSyncCallRef.current = now;
       syncAllAudioToTimelineTime(newPlayhead, { autoplay: true });
-    }
-
-    // End-of-clip advance
-    const ct = Number(v.currentTime || 0);
-    if (ct >= clipOut - 0.12 && !isAdvancingRef.current) {
-      advanceToNextClip(clip);
     }
   }
 
@@ -2130,6 +2129,7 @@ useEffect(() => {
     const t = playheadRef.current ?? playhead;
     if (atTimelineEnd(t)) {
       wantedPlayRef.current = false;
+      setPlayIntent(false);
       setIsPlaying(false);
       return;
     }
@@ -2193,21 +2193,19 @@ useEffect(() => {
 
     if (wantedPlayRef.current) {
       wantedPlayRef.current = false;
+      setPlayIntent(false); // ✅ immediate icon update
       stopAllClocks();
 
-      try {
-        v.pause();
-      } catch {}
+      try { v.pause(); } catch {}
       for (const { el } of audioPoolRef.current.values()) {
-        try {
-          el.pause();
-        } catch {}
+        try { el.pause(); } catch {}
       }
       setIsPlaying(false);
       return;
     }
 
     wantedPlayRef.current = true;
+    setPlayIntent(true);
 
     const t = playheadRef.current ?? playhead;
     const cur = findVideoClipAtTime(t);
@@ -2312,6 +2310,65 @@ useEffect(() => {
     });
   }
 
+  function getLoadedVideoClip() {
+  const key = loadedClipKeyRef.current;
+  if (!key) return null;
+  return (clipsRef.current || []).find((c) => c?.kind === "video" && c.key === key) || null;
+}
+
+  function enforceTrimmedOutBoundary() {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const clip = getLoadedVideoClip();
+    if (!clip) return;
+
+    const clipIn = Number(clip.in) || 0;
+    const clipOut = Number(clip.out) || 0;
+
+    if (!(clipOut > clipIn + 0.001)) return;
+
+    const EPS = 0.03; // ~30ms guard
+    const ct = Number(v.currentTime || 0);
+
+    if (ct < clipOut - EPS) {
+      // if we’re back inside range, unlock
+      trimBoundaryLockRef.current = false;
+      return;
+    }
+
+    // prevent re-entry spam while we’re handling the boundary
+    if (trimBoundaryLockRef.current) return;
+    trimBoundaryLockRef.current = true;
+
+    // HARD STOP: pause first so the decoder doesn't keep running past out
+    try { v.pause(); } catch {}
+
+    // pause all active audio too
+    for (const { el } of audioPoolRef.current.values()) {
+      try { el.pause(); } catch {}
+    }
+
+    // clamp to just before out
+    try { v.currentTime = Math.max(clipIn, clipOut - 0.001); } catch {}
+
+    // move timeline playhead to end of this clip
+    const endPlayhead = (Number(clip.start) || 0) + clipLen(clip);
+    playheadRef.current = endPlayhead;
+    setPlayhead(endPlayhead);
+
+    if (wantedPlayRef.current) {
+      // advance (async) — advanceToNextClip already stops if none
+      Promise.resolve(advanceToNextClip(clip)).catch(() => {
+        // if advancing fails, stop intent
+        wantedPlayRef.current = false;
+        setPlayIntent(false);
+        setIsPlaying(false);
+        stopAllClocks();
+      });
+    }
+  }
+
   function nextClip() {
     const t = playheadRef.current ?? playhead;
     const ns = findNextVideoStart(t);
@@ -2339,6 +2396,7 @@ useEffect(() => {
 
     if (nextStart == null) {
       wantedPlayRef.current = false;
+      setPlayIntent(false); // ✅ icon update
       setIsPlaying(false);
       isAdvancingRef.current = false;
       stopAllClocks();
@@ -2398,6 +2456,7 @@ useEffect(() => {
 
     const onTimeUpdate = () => {
       lastProgressTimeRef.current = { t: Number(v.currentTime || 0), at: performance.now() };
+      enforceTrimmedOutBoundary(); // ✅ catch overshoot
     };
 
     v.addEventListener("timeupdate", onTimeUpdate);
@@ -2415,6 +2474,7 @@ useEffect(() => {
       const t = playheadRef.current ?? playhead;
       if (atTimelineEnd(t)) {
         wantedPlayRef.current = false;
+        setPlayIntent(false);
         setIsPlaying(false);
         stopAllClocks();
         return;
@@ -2604,32 +2664,109 @@ useEffect(() => {
     });
   }
 
-  function removeFromTimeline(keysToRemove) {
-    pushUndo("delete");
-    const keys = Array.from(keysToRemove || []);
+  function removeFromTimeline(keysToRemove, { ripple = false } = {}) {
+    const keys = Array.from(keysToRemove || []).filter(Boolean);
     if (!keys.length) return;
 
+    pushUndo(ripple ? "ripple delete" : "delete");
+
+    const prev = clipsRef.current || [];
+
+    // Build lane-specific removal info (based on original positions)
+    const removedByLane = new Map(); // laneKey -> [{ start, len }]
+    let earliestStart = Infinity;
+
+    for (const c of prev) {
+      if (!c || !keys.includes(c.key)) continue;
+
+      const kind = c.kind === "audio" ? "audio" : "video";
+      const track = kind === "video" ? 0 : (Number(c.track) || 0);
+      const laneKey = `${kind}:${track}`;
+
+      const s = Number(c.start) || 0;
+      const len = clipLen(c);
+
+      earliestStart = Math.min(earliestStart, s);
+
+      if (!removedByLane.has(laneKey)) removedByLane.set(laneKey, []);
+      removedByLane.get(laneKey).push({ start: s, len });
+    }
+
+    // Remove clips first
     const removingLoaded = keys.includes(loadedClipKeyRef.current);
 
-    setClipsSynced((prev) => prev.filter((c) => c && !keys.includes(c.key)));
+    setClipsSynced((prevClips) => {
+      const remaining = prevClips.filter((c) => c && !keys.includes(c.key));
 
+      // Normal delete: no shifting
+      if (!ripple) return remaining;
+
+      // Ripple delete: shift clips on each lane by sum of deleted lengths before them
+      // IMPORTANT: use the clip's original start (from current `prevClips`) as base
+      // (since this setClipsSynced runs once, prevClips is the original snapshot)
+      const startByKey = new Map(prevClips.map((c) => [c.key, Number(c.start) || 0]));
+
+      // Pre-sort removals per lane
+      const sortedRemovedByLane = new Map();
+      for (const [laneKey, segs] of removedByLane.entries()) {
+        const sorted = segs
+          .filter(Boolean)
+          .map((x) => ({ start: Number(x.start) || 0, len: Math.max(0, Number(x.len) || 0) }))
+          .sort((a, b) => a.start - b.start);
+
+        sortedRemovedByLane.set(laneKey, sorted);
+      }
+
+      const EPS = 1e-6;
+
+      return remaining.map((c) => {
+        const kind = c.kind === "audio" ? "audio" : "video";
+        const track = kind === "video" ? 0 : (Number(c.track) || 0);
+        const laneKey = `${kind}:${track}`;
+
+        const baseStart = startByKey.get(c.key);
+        const s0 = Number.isFinite(baseStart) ? baseStart : (Number(c.start) || 0);
+
+        const segs = sortedRemovedByLane.get(laneKey);
+        if (!segs || !segs.length) return c;
+
+        let shift = 0;
+        for (const seg of segs) {
+          // Only deletions that occur before this clip's start affect it
+          if ((Number(seg.start) || 0) <= s0 + EPS) shift += (Number(seg.len) || 0);
+          else break; // segs sorted, so we can stop early
+        }
+
+        if (shift <= 0) return c;
+
+        return { ...c, start: Math.max(0, s0 - shift) };
+      });
+    });
+
+    // clear selection
     setSelectedClipKeys(new Set());
     setActiveClipKey(null);
 
     requestAnimationFrame(() => {
-      const t = playheadRef.current ?? playhead;
+      const t = Number.isFinite(earliestStart) && earliestStart !== Infinity
+        ? Math.max(0, earliestStart)
+        : (playheadRef.current ?? playhead);
 
+      // If we removed the loaded clip, force reload
       if (removingLoaded) {
         loadedClipKeyRef.current = null;
         loadedSrcRef.current = "";
       }
 
-      // also drop any removed audio keys
+      // drop any removed audio keys
       for (const k of keys) unloadAndRemoveAudioKey(k);
+
+      setPlayhead(t);
+      playheadRef.current = t;
 
       ensureLoadedForTimelineTime(t, { autoplay: wantedPlayRef.current }).finally(() => {
         syncAllAudioToTimelineTime(t, { autoplay: wantedPlayRef.current });
-        if (wantedPlayRef.current) forceResume("plainDelete");
+        if (wantedPlayRef.current) forceResume(ripple ? "rippleDelete" : "delete");
       });
     });
   }
@@ -2708,13 +2845,17 @@ useEffect(() => {
         if (!toRemove.length) return;
 
         e.preventDefault();
-        removeFromTimeline(toRemove);
+
+        const shouldRipple =
+          tool === "ripple" || e.shiftKey;
+
+        removeFromTimeline(toRemove, { ripple: shouldRipple });
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeClipKey]);
+  }, [activeClipKey, tool]);
 
   // -------- Clip drag / Razor split --------
   function splitClipAtTime(clipKey, timelineT) {
@@ -2797,19 +2938,17 @@ useEffect(() => {
       if (!clip) return;
 
       const t0 = Number(clip.start) || 0;
-      const allLanes = !!e.shiftKey;
-
       const keys = clipsSorted
-        .filter((c) => {
-          if (!c) return false;
-          if (!allLanes) {
-            if (c.kind !== clip.kind) return false;
-            if ((Number(c.track) || 0) !== (Number(clip.track) || 0)) return false;
-          }
-          return (Number(c.start) || 0) >= t0 - 1e-6;
-        })
-        .sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-        .map((c) => c.key);
+      .filter((c) => c && (Number(c.start) || 0) >= t0 - 1e-6)
+      .sort((a, b) => {
+        const ds = (Number(a.start) || 0) - (Number(b.start) || 0);
+        if (ds !== 0) return ds;
+        const ak = a.kind === "video" ? 0 : 1;
+        const bk = b.kind === "video" ? 0 : 1;
+        if (ak !== bk) return ak - bk;
+        return (Number(a.track) || 0) - (Number(b.track) || 0);
+      })
+      .map((c) => c.key);
 
       setSelectionImmediate(keys, { additive: false });
       // continue into drag
@@ -2833,11 +2972,12 @@ useEffect(() => {
     const groupKeys = sel && sel.has(clipKey) ? Array.from(sel) : [clipKey];
     const group = clips
       .filter((c) => groupKeys.includes(c.key))
-      .filter((c) => {
-        if (tool === "trackFwd" && e.shiftKey) return true;
-        return c.kind === primary.kind;
-      })
-      .map((c) => ({ key: c.key, start: Number(c.start) || 0, kind: c.kind, track: Number(c.track) || 0 }));
+      .map((c) => ({
+        key: c.key,
+        start: Number(c.start) || 0,
+        kind: c.kind,
+        track: Number(c.track) || 0,
+      }));
 
     dragGroupRef.current = group;
     dragGroupPrimaryKeyRef.current = clipKey;
@@ -2882,7 +3022,6 @@ useEffect(() => {
 
     // decide what lane we’re snapping within (based on where you’re dragging)
     const lane = getLaneFromClientY(e.clientY);
-
     // IMPORTANT: only snap within same kind lane (video stays video, audio stays audio)
     const targetLane =
       lane && lane.kind === (dragOrigTrackRef.current?.kind ?? primaryOrig.kind)
@@ -2908,6 +3047,14 @@ useEffect(() => {
     //}
 
     const groupKeySet = new Set(group.map((g) => g.key));
+    const primaryKind = primaryOrig.kind ?? dragOrigTrackRef.current?.kind;
+    const primaryTrack = Number(primaryOrig.track ?? dragOrigTrackRef.current?.track) || 0;
+
+    // optional vertical lane move: keep relative lane offsets (only within same kind)
+    let trackDelta = 0;
+    if (lane && lane.kind === primaryKind) {
+      trackDelta = (Number(lane.track) || 0) - primaryTrack;
+    }
 
     setClipsSynced((prev) =>
       prev.map((c) => {
@@ -2916,6 +3063,19 @@ useEffect(() => {
         const g = group.find((x) => x.key === c.key);
         const baseStart = Number(g?.start ?? c.start ?? 0);
         const movedStart = Math.max(0, baseStart + delta);
+
+        // preserve each clip’s own lane by default
+        let nextKind = c.kind;
+        let nextTrack = Number(c.track) || 0;
+
+        // if user drags vertically, move clips WITHIN THEIR KIND, keeping relative offsets
+        if (trackDelta !== 0 && c.kind === primaryKind) {
+          if (nextKind === "video") {
+            nextTrack = 0;
+          } else {
+            nextTrack = clamp(nextTrack + trackDelta, 0, 4);
+          }
+        }
 
         return { ...c, start: movedStart, kind: nextKind, track: nextTrack };
       })
@@ -3648,10 +3808,8 @@ useEffect(() => {
   }, [libraryVideos]);
 
   const playPauseIcon = useMemo(() => {
-    const v = videoRef.current;
-    const actuallyPlaying = v ? !v.paused && !v.ended : isPlaying;
-    return actuallyPlaying ? "⏸" : "▶";
-  }, [isPlaying, viewerSrc, playhead]);
+    return playIntent ? "⏸" : "▶";
+  }, [playIntent]);
 
   // ✅ CSS-independent positioning: use transform for playhead visuals
   const playheadX = useMemo(() => (Number(playhead) || 0) * PPS, [playhead, PPS]);
@@ -3902,7 +4060,7 @@ useEffect(() => {
                         className="genEditPBtn"
                         onClick={togglePlay}
                         disabled={!hasAnyClips}
-                        aria-label={isPlaying ? "Pause" : "Play"}
+                        aria-label={playIntent ? "Pause" : "Play"}
                       >
                         {playPauseIcon}
                       </button>
