@@ -17,6 +17,13 @@ import StarRating from "../ui/StarRating.jsx";
 import "./Watch.css";
 import ConfirmModal from "../ui/ConfirmModal.jsx";
 
+const INCLUDE_TEST_DATA =
+  String(import.meta.env.VITE_INCLUDE_TEST_DATA || "0") === "1";
+
+
+console.log("VITE_INCLUDE_TEST_DATA =", import.meta.env.VITE_INCLUDE_TEST_DATA);
+console.log("INCLUDE_TEST_DATA =", INCLUDE_TEST_DATA);
+
 function timeAgo(iso) {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return "";
@@ -158,7 +165,12 @@ export default function Watch({ user, onRequireLogin }) {
 
         const all = await getVideos({ category: v.category });
         if (cancelled) return;
-        setSuggested(all.filter((x) => String(x.id) !== String(id)).slice(0, 12));
+        setSuggested(
+          all
+            .filter((x) => String(x.id) !== String(id))
+            .filter((x) => INCLUDE_TEST_DATA || !x?.isTestData)
+            .slice(0, 12)
+        );
 
         // ratings
         if (isLoggedIn) {
@@ -1010,7 +1022,9 @@ export default function Watch({ user, onRequireLogin }) {
         <aside className="suggestArea">
           <div className="suggestTitle">More in {video.category}</div>
           <div className="suggestList">
-            {suggested.map((v) => (
+            {suggested
+              .filter((v) => INCLUDE_TEST_DATA || !v?.isTestData && !v?.is_test_data)
+              .map((v) => (
               <button
                 key={v.id}
                 className="suggestItem"

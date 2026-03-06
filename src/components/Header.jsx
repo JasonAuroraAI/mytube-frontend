@@ -82,7 +82,7 @@ export default function Header({
         {/* LEFT */}
         <div className="header-left">
           <NavLink to="/watch" className="logo">
-            AI Tube
+            DYOPorn
           </NavLink>
 
         </div>

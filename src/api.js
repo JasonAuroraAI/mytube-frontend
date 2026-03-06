@@ -1,5 +1,8 @@
 const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:3001").replace(/\/$/, "");
 
+const INCLUDE_TEST =
+  String(import.meta.env.VITE_INCLUDE_TEST_DATA || "0") === "1";
+
 // helper
 function qs(paramsObj = {}) {
   const params = new URLSearchParams();
@@ -14,9 +17,23 @@ function qs(paramsObj = {}) {
 
 // VIDEOS
 export async function getVideos({ q, category, sort } = {}) {
-  const url = `${API_BASE}/api/videos${qs({ q, category, sort })}`;
+  const url = `${API_BASE}/api/videos${qs({
+    q,
+    category,
+    sort,
+    includeTest: INCLUDE_TEST ? "1" : undefined,
+  })}`;
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) throw new Error(`getVideos failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getVideo(id) {
+  const url = `${API_BASE}/api/videos/${id}${qs({
+    includeTest: INCLUDE_TEST ? "1" : undefined,
+  })}`;
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`getVideo failed: ${res.status}`);
   return res.json();
 }
 
@@ -27,11 +44,6 @@ export async function getCategories() {
   return res.json();
 }
 
-export async function getVideo(id) {
-  const res = await fetch(`${API_BASE}/api/videos/${id}`, { credentials: "include" });
-  if (!res.ok) throw new Error(`getVideo failed: ${res.status}`);
-  return res.json();
-}
 
 // THUMBS
 export function thumbUrl(video) {
